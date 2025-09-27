@@ -18,9 +18,9 @@ use uuid::Uuid;
 use crate::codec::canonicalize_f64;
 
 pub type WatchStream =
-  Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>>>>;
+  Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>> + Send>>;
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait Database: Clone + Sized {
   type QMH: QueueMessageHandle + 'static;
 
@@ -43,13 +43,13 @@ pub trait Database: Clone + Sized {
   fn close(&self);
 }
 
-#[async_trait(?Send)]
-pub trait QueueMessageHandle {
+#[async_trait]
+pub trait QueueMessageHandle: Send + Sync {
   async fn take_payload(&mut self) -> Result<Vec<u8>, JsErrorBox>;
   async fn finish(&self, success: bool) -> Result<(), JsErrorBox>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl QueueMessageHandle for Box<dyn QueueMessageHandle> {
   async fn take_payload(&mut self) -> Result<Vec<u8>, JsErrorBox> {
     (**self).take_payload().await

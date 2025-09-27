@@ -622,7 +622,7 @@ impl Sqlite {
   }
 }
 
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 impl Database for Sqlite {
   type QMH = SqliteMessageHandle;
 
@@ -659,7 +659,7 @@ impl Database for Sqlite {
   fn watch(
     &self,
     keys: Vec<Vec<u8>>,
-  ) -> Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>>>> {
+  ) -> Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>> + Send>> {
     Sqlite::watch(self, keys)
   }
 
@@ -696,7 +696,7 @@ impl SqliteMessageHandle {
   }
 }
 
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 impl QueueMessageHandle for SqliteMessageHandle {
   async fn finish(&self, success: bool) -> Result<(), JsErrorBox> {
     SqliteMessageHandle::finish(self, success)

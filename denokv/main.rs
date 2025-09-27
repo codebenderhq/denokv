@@ -39,6 +39,7 @@ use denokv_proto::time::utc_now;
 use denokv_proto::AtomicWrite;
 use denokv_proto::Consistency;
 use denokv_proto::ConvertError;
+use denokv_proto::Database;
 use denokv_proto::DatabaseMetadata;
 use denokv_proto::EndpointInfo;
 use denokv_proto::MetadataExchangeRequest;
@@ -49,6 +50,8 @@ use denokv_sqlite::Sqlite;
 use denokv_sqlite::SqliteBackendError;
 use denokv_sqlite::SqliteConfig;
 use denokv_sqlite::SqliteNotifier;
+use denokv_postgres::Postgres;
+use denokv_postgres::PostgresConfig;
 use denokv_timemachine::backup_source_s3::DatabaseBackupSourceS3;
 use denokv_timemachine::backup_source_s3::DatabaseBackupSourceS3Config;
 use denokv_timemachine::time_travel::TimeTravelControl;
@@ -81,8 +84,54 @@ const SYNC_INTERVAL_BASE_MS: u64 = 10000;
 const SYNC_INTERVAL_JITTER_MS: u64 = 5000;
 
 #[derive(Clone)]
+enum DatabaseBackend {
+  Sqlite(Sqlite),
+  Postgres(Postgres),
+}
+
+impl DatabaseBackend {
+  async fn snapshot_read(
+    &self,
+    requests: Vec<ReadRange>,
+    options: SnapshotReadOptions,
+  ) -> Result<Vec<denokv_proto::ReadRangeOutput>, deno_error::JsErrorBox> {
+    match self {
+      DatabaseBackend::Sqlite(sqlite) => sqlite.snapshot_read(requests, options).await.map_err(deno_error::JsErrorBox::from_err),
+      DatabaseBackend::Postgres(postgres) => postgres.snapshot_read(requests, options).await,
+    }
+  }
+
+  async fn atomic_write(
+    &self,
+    write: AtomicWrite,
+  ) -> Result<Option<denokv_proto::CommitResult>, deno_error::JsErrorBox> {
+    match self {
+      DatabaseBackend::Sqlite(sqlite) => sqlite.atomic_write(write).await.map_err(deno_error::JsErrorBox::from_err),
+      DatabaseBackend::Postgres(postgres) => postgres.atomic_write(write).await,
+    }
+  }
+
+  fn watch(
+    &self,
+    keys: Vec<Vec<u8>>,
+  ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<denokv_proto::WatchKeyOutput>, deno_error::JsErrorBox>> + Send>> {
+    match self {
+      DatabaseBackend::Sqlite(sqlite) => sqlite.watch(keys),
+      DatabaseBackend::Postgres(postgres) => postgres.watch(keys),
+    }
+  }
+
+  fn close(&self) {
+    match self {
+      DatabaseBackend::Sqlite(sqlite) => sqlite.close(),
+      DatabaseBackend::Postgres(postgres) => postgres.close(),
+    }
+  }
+}
+
+#[derive(Clone)]
 struct AppState {
-  sqlite: Sqlite,
+  database: DatabaseBackend,
   access_token: &'static str,
 }
 
@@ -135,7 +184,9 @@ async fn run_pitr(
       run_sync(config, &options.replica, false, None).await?;
     }
     PitrSubCmd::List(options) => {
-      let db = rusqlite::Connection::open(&config.sqlite_path)?;
+      let sqlite_path = config.sqlite_path.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("SQLite path is required for PITR operations"))?;
+      let db = rusqlite::Connection::open(sqlite_path)?;
       let mut ttc = TimeTravelControl::open(db)?;
 
       let start = if let Some(start) = &options.start {
@@ -174,7 +225,9 @@ async fn run_pitr(
       }
     }
     PitrSubCmd::Info => {
-      let db = rusqlite::Connection::open(&config.sqlite_path)?;
+      let sqlite_path = config.sqlite_path.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("SQLite path is required for PITR operations"))?;
+      let db = rusqlite::Connection::open(sqlite_path)?;
       let mut ttc = TimeTravelControl::open(db)?;
 
       let current_versionstamp = ttc.get_current_versionstamp()?;
@@ -184,7 +237,9 @@ async fn run_pitr(
       );
     }
     PitrSubCmd::Checkout(options) => {
-      let db = rusqlite::Connection::open(&config.sqlite_path)?;
+      let sqlite_path = config.sqlite_path.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("SQLite path is required for PITR operations"))?;
+      let db = rusqlite::Connection::open(sqlite_path)?;
       let mut ttc = TimeTravelControl::open(db)?;
       let versionstamp = hex::decode(&options.versionstamp)
         .ok()
@@ -211,26 +266,43 @@ async fn run_serve(
     anyhow::bail!("Access token must be at minimum 12 chars long.");
   }
 
-  let path = Path::new(&config.sqlite_path);
-  let read_only = options.read_only || options.sync_from_s3;
-  let sqlite_config = SqliteConfig {
-    batch_timeout: options
-      .atomic_write_batch_timeout_ms
-      .map(std::time::Duration::from_millis),
-    num_workers: options.num_workers,
+  let database = match config.database_type.as_str() {
+    "sqlite" => {
+      let sqlite_path = config.sqlite_path.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("SQLite path is required when using sqlite database type"))?;
+      let path = Path::new(sqlite_path);
+      let read_only = options.read_only || options.sync_from_s3;
+      let sqlite_config = SqliteConfig {
+        batch_timeout: options
+          .atomic_write_batch_timeout_ms
+          .map(std::time::Duration::from_millis),
+        num_workers: options.num_workers,
+      };
+      let sqlite = open_sqlite(path, read_only, sqlite_config.clone())?;
+      info!(
+        "Opened{} SQLite database at {}. Batch timeout: {:?}",
+        if read_only { " read only" } else { "" },
+        path.to_string_lossy(),
+        sqlite_config.batch_timeout,
+      );
+      DatabaseBackend::Sqlite(sqlite)
+    }
+    "postgres" => {
+      let postgres_url = config.postgres_url.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("PostgreSQL URL is required when using postgres database type"))?;
+      let postgres_config = PostgresConfig::new(postgres_url.clone())
+        .with_max_connections(options.num_workers.max(10));
+      let postgres = Postgres::new(postgres_config).await?;
+      info!("Opened PostgreSQL database at {}", postgres_url);
+      DatabaseBackend::Postgres(postgres)
+    }
+    _ => anyhow::bail!("Invalid database type: {}. Must be 'sqlite' or 'postgres'", config.database_type),
   };
-  let sqlite = open_sqlite(path, read_only, sqlite_config.clone())?;
-  info!(
-    "Opened{} database at {}. Batch timeout: {:?}",
-    if read_only { " read only" } else { "" },
-    path.to_string_lossy(),
-    sqlite_config.batch_timeout,
-  );
 
   let access_token = options.access_token.as_str();
 
   let state = AppState {
-    sqlite,
+    database,
     access_token,
   };
 
@@ -293,7 +365,9 @@ async fn run_sync(
   let s3_config = s3_config.load().await;
   let s3_client = aws_sdk_s3::Client::new(&s3_config);
 
-  let db = rusqlite::Connection::open(&config.sqlite_path)?;
+  let sqlite_path = config.sqlite_path.as_ref()
+    .ok_or_else(|| anyhow::anyhow!("SQLite path is required for sync operations"))?;
+  let db = rusqlite::Connection::open(sqlite_path)?;
   let mut ttc = TimeTravelControl::open(db)?;
   let s3_config = DatabaseBackupSourceS3Config {
     bucket: options
@@ -459,7 +533,7 @@ async fn snapshot_read_endpoint(
     consistency: Consistency::Strong,
   };
 
-  let result_ranges = state.sqlite.snapshot_read(requests, options).await?;
+  let result_ranges = state.database.snapshot_read(requests, options).await?;
 
   let res = result_ranges.into();
   Ok(Protobuf(res))
@@ -472,7 +546,7 @@ async fn atomic_write_endpoint(
 ) -> Result<Protobuf<pb::AtomicWriteOutput>, ApiError> {
   let atomic_write: AtomicWrite = atomic_write.try_into()?;
 
-  let res = state.sqlite.atomic_write(atomic_write).await?;
+  let res = state.database.atomic_write(atomic_write).await?;
 
   Ok(Protobuf(res.into()))
 }
@@ -483,7 +557,7 @@ async fn watch_endpoint(
 ) -> Result<impl IntoResponse, ApiError> {
   let keys = watch.try_into()?;
 
-  let watcher = state.sqlite.watch(keys);
+  let watcher = state.database.watch(keys);
 
   let data_stream = watcher.map_ok(|outs| {
     let output = pb::WatchOutput::from(outs);
@@ -674,6 +748,12 @@ impl From<ConvertError> for ApiError {
         ApiError::InvalidMutationEnqueueDeadline
       }
     }
+  }
+}
+
+impl From<deno_error::JsErrorBox> for ApiError {
+  fn from(err: deno_error::JsErrorBox) -> ApiError {
+    ApiError::InternalServerError
   }
 }
 

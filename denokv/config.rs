@@ -6,7 +6,15 @@ use clap::Parser;
 pub struct Config {
   /// The path to the SQLite database KV will persist to.
   #[clap(long, env = "DENO_KV_SQLITE_PATH")]
-  pub sqlite_path: String,
+  pub sqlite_path: Option<String>,
+
+  /// PostgreSQL connection URL for the database.
+  #[clap(long, env = "DENO_KV_POSTGRES_URL")]
+  pub postgres_url: Option<String>,
+
+  /// Database type to use (sqlite or postgres).
+  #[clap(long, env = "DENO_KV_DATABASE_TYPE", default_value = "sqlite")]
+  pub database_type: String,
 
   #[command(subcommand)]
   pub subcommand: SubCmd,

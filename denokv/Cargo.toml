@@ -28,6 +28,7 @@ clap.workspace = true
 constant_time_eq.workspace = true
 denokv_proto.workspace = true
 denokv_sqlite.workspace = true
+denokv_postgres.workspace = true
 denokv_timemachine.workspace = true
 env_logger.workspace = true
 futures.workspace = true
