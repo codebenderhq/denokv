@@ -140,7 +140,7 @@ enum MetadataState {
   Error(Arc<String>),
 }
 
-pub trait RemotePermissions: Clone + 'static {
+pub trait RemotePermissions: Clone + Send + Sync + 'static {
   fn check_net_url(&self, url: &Url) -> Result<(), JsErrorBox>;
 }
 
@@ -620,7 +620,7 @@ pub enum WatchError {
   TryFromSlice(std::array::TryFromSliceError),
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl<P: RemotePermissions, T: RemoteTransport> Database for Remote<P, T> {
   type QMH = DummyQueueMessageHandle;
 
@@ -840,7 +840,7 @@ impl<P: RemotePermissions, T: RemoteTransport> Database for Remote<P, T> {
   fn watch(
     &self,
     keys: Vec<Vec<u8>>,
-  ) -> Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>>>> {
+  ) -> Pin<Box<dyn Stream<Item = Result<Vec<WatchKeyOutput>, JsErrorBox>> + Send>> {
     let this = self.clone();
     let stream = try_stream! {
       let mut attempt = 0;
@@ -923,7 +923,7 @@ impl<P: RemotePermissions, T: RemoteTransport> Database for Remote<P, T> {
 
 pub struct DummyQueueMessageHandle {}
 
-#[async_trait(?Send)]
+#[async_trait]
 impl QueueMessageHandle for DummyQueueMessageHandle {
   async fn take_payload(&mut self) -> Result<Vec<u8>, JsErrorBox> {
     unimplemented!()
