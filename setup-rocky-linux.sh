@@ -146,7 +146,7 @@ done
 echo "PostgreSQL is ready!"
 
 # Set environment variables for tests
-export POSTGRES_URL="postgresql://postgres:password@localhost:5432/denokv_test"
+export POSTGRES_URL="postgresql://denokv:denokv_password@localhost:5432/denokv"
 export DENO_KV_ACCESS_TOKEN="1234abcd5678efgh"  # Test access token (minimum 12 chars)
 
 # Run the tests
@@ -295,16 +295,16 @@ case "${1:-help}" in
     start)
         print_status "Starting all services..."
         
-        # Start PostgreSQL
-        print_status "Starting PostgreSQL..."
-        docker-compose -f docker-compose.test.yml up -d postgres
+        # Start PostgreSQL service
+        print_status "Starting PostgreSQL service..."
+        sudo systemctl start postgresql
         
         # Wait for PostgreSQL
-        until docker-compose -f docker-compose.test.yml exec postgres pg_isready -U postgres; do
+        until sudo -u postgres pg_isready; do
             echo "Waiting for PostgreSQL..."
             sleep 2
         done
-        print_success "PostgreSQL started"
+        print_success "PostgreSQL service started"
         
         # Start DenoKV server
         print_status "Starting DenoKV server..."
@@ -325,9 +325,9 @@ case "${1:-help}" in
         ;;
         
     stop)
-        print_status "Stopping all services..."
+        print_status "Stopping DenoKV server..."
         
-        # Stop DenoKV server
+        # Stop DenoKV server only
         if pgrep -f "denokv.*serve" > /dev/null; then
             pkill -f "denokv.*serve"
             print_success "DenoKV server stopped"
@@ -335,9 +335,7 @@ case "${1:-help}" in
             print_warning "DenoKV server was not running"
         fi
         
-        # Stop PostgreSQL
-        docker-compose -f docker-compose.test.yml down
-        print_success "PostgreSQL stopped"
+        print_status "PostgreSQL service remains running (persistent)"
         ;;
         
     restart)
@@ -346,15 +344,32 @@ case "${1:-help}" in
         $0 start
         ;;
         
+    stop-postgres)
+        print_status "Stopping PostgreSQL service..."
+        sudo systemctl stop postgresql
+        print_success "PostgreSQL service stopped"
+        print_warning "Note: DenoKV server will not work without PostgreSQL"
+        ;;
+        
+    start-postgres)
+        print_status "Starting PostgreSQL service..."
+        sudo systemctl start postgresql
+        until sudo -u postgres pg_isready; do
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+        done
+        print_success "PostgreSQL service started"
+        ;;
+        
     status)
         print_status "Service Status:"
         echo ""
         
-        # Check PostgreSQL
-        if docker-compose -f docker-compose.test.yml ps postgres | grep -q "Up"; then
-            print_success "PostgreSQL: Running"
+        # Check PostgreSQL service
+        if systemctl is-active --quiet postgresql; then
+            print_success "PostgreSQL Service: Running"
         else
-            print_warning "PostgreSQL: Stopped"
+            print_warning "PostgreSQL Service: Stopped"
         fi
         
         # Check DenoKV server
@@ -382,14 +397,19 @@ case "${1:-help}" in
         
     *)
         echo "DenoKV Service Manager"
-        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo "Usage: $0 {start|stop|restart|status|logs|start-postgres|stop-postgres}"
         echo ""
         echo "Commands:"
-        echo "  start   - Start PostgreSQL and DenoKV server"
-        echo "  stop    - Stop all services"
-        echo "  restart - Restart all services"
-        echo "  status  - Show service status"
-        echo "  logs    - Show DenoKV server logs"
+        echo "  start         - Start DenoKV server (PostgreSQL must be running)"
+        echo "  stop          - Stop DenoKV server only (PostgreSQL stays running)"
+        echo "  restart       - Restart DenoKV server only"
+        echo "  status        - Show service status"
+        echo "  logs          - Show DenoKV server logs"
+        echo "  start-postgres - Start PostgreSQL service"
+        echo "  stop-postgres  - Stop PostgreSQL service (use with caution)"
+        echo ""
+        echo "Note: PostgreSQL runs as a persistent system service"
+        echo "      DenoKV server can be started/stopped independently"
         ;;
 esac
 EOF
@@ -398,22 +418,42 @@ chmod +x manage-services.sh
 
 print_success "Scripts created successfully"
 
-# Start PostgreSQL in Docker
-print_status "Starting PostgreSQL test database..."
-docker-compose -f docker-compose.test.yml up -d postgres
+# Install and configure PostgreSQL server
+print_status "Installing and configuring PostgreSQL server..."
+sudo dnf install -y postgresql-server postgresql-contrib
+
+# Initialize PostgreSQL if not already done
+if [ ! -d "/var/lib/pgsql/data" ]; then
+    print_status "Initializing PostgreSQL database..."
+    sudo postgresql-setup --initdb
+fi
+
+# Start and enable PostgreSQL service
+print_status "Starting PostgreSQL service..."
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
 
 # Wait for PostgreSQL to be ready
 print_status "Waiting for PostgreSQL to be ready..."
-until docker-compose -f docker-compose.test.yml exec postgres pg_isready -U postgres; do
+until sudo -u postgres pg_isready; do
   echo "PostgreSQL is not ready yet..."
   sleep 2
 done
 
-print_success "PostgreSQL is ready!"
+print_success "PostgreSQL service is ready!"
+
+# Create DenoKV database and user
+print_status "Setting up DenoKV database..."
+sudo -u postgres psql -c "CREATE DATABASE denokv;" 2>/dev/null || print_warning "Database 'denokv' may already exist"
+sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User 'denokv' may already exist"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;" 2>/dev/null || true
+sudo -u postgres psql -c "ALTER USER denokv CREATEDB;" 2>/dev/null || true
+
+print_success "DenoKV database and user created!"
 
 # Set up environment variables
 print_status "Setting up environment variables..."
-export DENO_KV_POSTGRES_URL="postgresql://postgres:password@localhost:5432/denokv_test"
+export DENO_KV_POSTGRES_URL="postgresql://denokv:denokv_password@localhost:5432/denokv"
 export DENO_KV_DATABASE_TYPE="postgres"
 
 # Generate access token if not set
@@ -431,7 +471,7 @@ fi
 # Create environment file for persistence
 print_status "Creating .env file for environment variables..."
 cat > .env << EOF
-DENO_KV_POSTGRES_URL=postgresql://postgres:password@localhost:5432/denokv_test
+DENO_KV_POSTGRES_URL=postgresql://denokv:denokv_password@localhost:5432/denokv
 DENO_KV_DATABASE_TYPE=postgres
 DENO_KV_ACCESS_TOKEN=$DENO_KV_ACCESS_TOKEN
 DENO_KV_NUM_WORKERS=4
@@ -573,7 +613,8 @@ echo "✅ DenoKV server started and running"
 echo "✅ Port 4512 opened in firewall"
 echo ""
 print_status "Current status:"
-echo "  🐘 PostgreSQL: Running in Docker (port 5432)"
+echo "  🐘 PostgreSQL: Running as system service (port 5432)"
+echo "  🗄️  Database: denokv (user: denokv)"
 echo "  🚀 DenoKV Server: Running on http://0.0.0.0:4512"
 echo "  🔑 Access Token: ${DENO_KV_ACCESS_TOKEN:0:8}... (saved in .env)"
 echo "  📝 Log File: denokv.log"
@@ -584,11 +625,13 @@ echo "  Connect from Deno apps using: http://your-server-ip:4512"
 echo "  Access token: $DENO_KV_ACCESS_TOKEN"
 echo ""
 print_status "Management commands:"
-echo "  ./manage-services.sh start    - Start all services"
-echo "  ./manage-services.sh stop     - Stop all services"
-echo "  ./manage-services.sh restart  - Restart all services"
+echo "  ./manage-services.sh start    - Start DenoKV server"
+echo "  ./manage-services.sh stop     - Stop DenoKV server (PostgreSQL stays running)"
+echo "  ./manage-services.sh restart  - Restart DenoKV server"
 echo "  ./manage-services.sh status   - Check service status"
 echo "  ./manage-services.sh logs     - View server logs"
+echo "  ./manage-services.sh start-postgres - Start PostgreSQL service"
+echo "  ./manage-services.sh stop-postgres  - Stop PostgreSQL service"
 echo "  ./test-postgres-integration.sh - Run tests again"
 echo "  ./generate-access-token.sh     - Generate new token"
 echo "  ./upgrade-denokv.sh            - Update and rebuild"
