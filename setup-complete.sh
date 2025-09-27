@@ -54,13 +54,13 @@ print_success "Unnecessary scripts removed!"
 print_step "Step 2: Setting up PostgreSQL..."
 
 # Stop PostgreSQL services
-$SUDO_CMD systemctl stop postgresql postgresql-16 2>/dev/null || true
-$SUDO_CMD systemctl disable postgresql postgresql-16 2>/dev/null || true
+$SUDO_CMD systemctl stop postgresql 2>/dev/null || true
+$SUDO_CMD systemctl disable postgresql 2>/dev/null || true
 $SUDO_CMD pkill -f postgres 2>/dev/null || true
 sleep 2
 
 # Remove PostgreSQL packages and data
-$SUDO_CMD dnf remove -y postgresql* postgresql16* 2>/dev/null || true
+$SUDO_CMD dnf remove -y postgresql* 2>/dev/null || true
 $SUDO_CMD rm -rf /var/lib/pgsql /var/lib/postgresql /var/lib/postgres 2>/dev/null || true
 $SUDO_CMD rm -rf /etc/postgresql /etc/postgresql-common /usr/lib/postgresql 2>/dev/null || true
 $SUDO_CMD userdel postgres 2>/dev/null || true
@@ -73,9 +73,9 @@ print_success "PostgreSQL completely removed!"
 print_status "Installing latest PostgreSQL packages..."
 $SUDO_CMD dnf update -y
 
-# Install PostgreSQL 16 (latest stable version)
-print_status "Installing PostgreSQL 16 (latest stable)..."
-$SUDO_CMD dnf install -y postgresql16 postgresql16-server postgresql16-contrib postgresql16-devel
+# Install PostgreSQL (latest available version)
+print_status "Installing PostgreSQL (latest available)..."
+$SUDO_CMD dnf install -y postgresql postgresql-server postgresql-contrib postgresql-devel
 
 # Verify PostgreSQL version
 POSTGRES_VERSION=$(postgres --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+' | head -1 || echo "Unknown")
@@ -90,9 +90,9 @@ $SUDO_CMD chown -R postgres:postgres /var/run/postgresql
 $SUDO_CMD chmod 700 "$POSTGRES_DATA_DIR"
 $SUDO_CMD chmod 755 /var/run/postgresql
 
-# Initialize PostgreSQL 16
-print_status "Initializing PostgreSQL 16 database..."
-$SUDO_CMD /usr/pgsql-16/bin/postgresql-16-setup --initdb
+# Initialize PostgreSQL
+print_status "Initializing PostgreSQL database..."
+$SUDO_CMD postgresql-setup --initdb
 
 # Step 5: Configure PostgreSQL
 print_status "Configuring PostgreSQL..."
@@ -130,9 +130,9 @@ default_text_search_config = 'pg_catalog.english'
 EOF
 
 # Step 6: Start PostgreSQL
-print_status "Starting PostgreSQL 16 service..."
-$SUDO_CMD systemctl enable postgresql-16
-$SUDO_CMD systemctl start postgresql-16
+print_status "Starting PostgreSQL service..."
+$SUDO_CMD systemctl enable postgresql
+$SUDO_CMD systemctl start postgresql
 
 # Wait for PostgreSQL to be ready
 print_status "Waiting for PostgreSQL to be ready..."
@@ -251,8 +251,8 @@ print_status "Creating systemd service..."
 $SUDO_CMD tee /etc/systemd/system/denokv.service > /dev/null << EOF
 [Unit]
 Description=DenoKV Server
-After=network.target postgresql-16.service
-Requires=postgresql-16.service
+After=network.target postgresql.service
+Requires=postgresql.service
 
 [Service]
 Type=simple
