@@ -43,6 +43,26 @@ To start the DenoKV server for remote access, you need to set up authentication:
 
 ### 1. Set Required Environment Variables
 
+**Option A: Automatic Token Generation (Recommended)**
+The server script will automatically generate a secure token if none is provided:
+
+```bash
+# Required: PostgreSQL connection URL
+export DENO_KV_POSTGRES_URL="postgresql://user:password@host:port/database"
+
+# Optional: Additional configuration
+export DENO_KV_DATABASE_TYPE="postgres"  # Default: postgres
+export DENO_KV_NUM_WORKERS="4"           # Default: 4
+```
+
+**Option B: Manual Token Generation**
+Generate a token manually using the utility script:
+
+```bash
+./generate-access-token.sh
+```
+
+**Option C: Set Your Own Token**
 ```bash
 # Required: Access token for authentication (minimum 12 characters)
 export DENO_KV_ACCESS_TOKEN="your-secure-access-token-here"

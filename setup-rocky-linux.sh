@@ -162,12 +162,23 @@ set -e
 
 echo "🚀 Starting DenoKV server..."
 
-# Check if access token is provided
+# Generate access token if not provided
 if [ -z "$DENO_KV_ACCESS_TOKEN" ]; then
-    echo "❌ Error: DENO_KV_ACCESS_TOKEN environment variable is required"
-    echo "   Set it with: export DENO_KV_ACCESS_TOKEN='your-secure-token-here'"
-    echo "   Token must be at least 12 characters long"
-    exit 1
+    echo "🔑 Generating secure access token..."
+    if command -v openssl &> /dev/null; then
+        DENO_KV_ACCESS_TOKEN=$(openssl rand -hex 16)
+    elif command -v /dev/urandom &> /dev/null; then
+        DENO_KV_ACCESS_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
+    else
+        echo "❌ Error: Cannot generate access token. Please install openssl or set DENO_KV_ACCESS_TOKEN manually"
+        echo "   Set it with: export DENO_KV_ACCESS_TOKEN='your-secure-token-here'"
+        echo "   Token must be at least 12 characters long"
+        exit 1
+    fi
+    export DENO_KV_ACCESS_TOKEN
+    echo "✅ Generated access token: ${DENO_KV_ACCESS_TOKEN:0:8}..."
+    echo "💾 Save this token securely: $DENO_KV_ACCESS_TOKEN"
+    echo ""
 fi
 
 # Check if PostgreSQL URL is provided
@@ -197,7 +208,59 @@ chmod +x start-denokv-server.sh
 
 chmod +x test-postgres-integration.sh
 
-print_success "Test script created successfully"
+# Create a token generation utility script
+print_status "Creating token generation utility..."
+cat > generate-access-token.sh << 'EOF'
+#!/bin/bash
+
+# Utility script to generate secure access tokens for DenoKV
+
+set -e
+
+echo "🔑 DenoKV Access Token Generator"
+echo "================================="
+echo ""
+
+# Generate token using best available method
+if command -v openssl &> /dev/null; then
+    echo "Using OpenSSL for token generation..."
+    TOKEN=$(openssl rand -hex 16)
+elif command -v /dev/urandom &> /dev/null; then
+    echo "Using /dev/urandom for token generation..."
+    TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
+else
+    echo "❌ Error: No secure random generator available"
+    echo "Please install openssl or use a manual token"
+    exit 1
+fi
+
+echo ""
+echo "✅ Generated secure access token:"
+echo "   $TOKEN"
+echo ""
+echo "📋 To use this token:"
+echo "   export DENO_KV_ACCESS_TOKEN='$TOKEN'"
+echo ""
+echo "🔒 Security notes:"
+echo "   - Keep this token secure and private"
+echo "   - Don't commit it to version control"
+echo "   - Use it in your Deno applications for remote access"
+echo "   - Token length: ${#TOKEN} characters (minimum required: 12)"
+echo ""
+
+# Optionally save to a file
+read -p "💾 Save token to .env file? (y/N): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "DENO_KV_ACCESS_TOKEN='$TOKEN'" > .env
+    echo "✅ Token saved to .env file"
+    echo "   Source it with: source .env"
+fi
+EOF
+
+chmod +x generate-access-token.sh
+
+print_success "Scripts created successfully"
 
 # Create a README for the setup
 print_status "Creating setup README..."
@@ -300,9 +363,9 @@ echo "2. Run: docker ps (to verify Docker access)"
 echo "3. Run: ./test-postgres-integration.sh (to test PostgreSQL integration)"
 echo ""
 print_status "For production server:"
-echo "1. Set DENO_KV_ACCESS_TOKEN environment variable (minimum 12 characters)"
-echo "2. Set DENO_KV_POSTGRES_URL environment variable"
-echo "3. Run: ./start-denokv-server.sh"
+echo "1. Set DENO_KV_POSTGRES_URL environment variable"
+echo "2. Run: ./start-denokv-server.sh (will auto-generate access token)"
+echo "   OR: ./generate-access-token.sh (to generate token manually)"
 echo ""
 print_status "Setup documentation is available in ROCKY_LINUX_SETUP.md"
 echo ""
