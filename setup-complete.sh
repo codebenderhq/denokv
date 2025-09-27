@@ -269,12 +269,14 @@ SyslogIdentifier=denokv
 # Environment variables
 Environment=RUST_LOG=info
 Environment=DENO_ENV=production
+Environment=DENO_KV_DATABASE_TYPE=postgres
+Environment=DENO_KV_POSTGRES_URL=postgresql://denokv:denokv_password@localhost:5432/denokv
+Environment=DENO_KV_ACCESS_TOKEN=$DENOKV_ACCESS_TOKEN
 Environment=POSTGRES_HOST=localhost
 Environment=POSTGRES_PORT=5432
 Environment=POSTGRES_DB=denokv
 Environment=POSTGRES_USER=denokv
 Environment=POSTGRES_PASSWORD=denokv_password
-Environment=DENOKV_ACCESS_TOKEN=$DENOKV_ACCESS_TOKEN
 
 # Security settings
 NoNewPrivileges=true
