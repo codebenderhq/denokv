@@ -24,6 +24,7 @@ echo ""
 if ! systemctl is-active --quiet postgresql; then
     print_status "Starting PostgreSQL service..."
     sudo systemctl start postgresql
+    sleep 2
 fi
 
 # Find pg_hba.conf

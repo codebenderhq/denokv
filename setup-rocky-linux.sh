@@ -513,8 +513,10 @@ print_success "Scripts created successfully"
 print_status "Installing and configuring PostgreSQL server..."
 sudo dnf install -y postgresql-server postgresql-contrib
 
-# Initialize PostgreSQL if not already done
-if [ ! -d "/var/lib/pgsql/data" ]; then
+# Check if PostgreSQL is already initialized
+if [ -d "/var/lib/pgsql/data" ] && [ "$(ls -A /var/lib/pgsql/data)" ]; then
+    print_status "PostgreSQL database already initialized"
+else
     print_status "Initializing PostgreSQL database..."
     sudo postgresql-setup --initdb
 fi
