@@ -1,20 +1,28 @@
 #!/bin/bash
 
-# Setup script for Rocky Linux to test DenoKV PostgreSQL integration
-# This script installs all necessary dependencies and sets up the environment
+# Rocky Linux Complete Setup Script for DenoKV
+# This script completely removes PostgreSQL and sets up a fresh development environment
+# Author: Assistant
+# Date: $(date '+%Y-%m-%d %H:%M:%S')
 
 set -e
-
-echo "🚀 Setting up Rocky Linux environment for DenoKV PostgreSQL testing..."
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# Function to print colored output
+# Configuration
+DENOKV_USER="denokv"
+DENOKV_PASSWORD="denokv_password"
+DENOKV_DATABASE="denokv"
+POSTGRES_DATA_DIR="/var/lib/pgsql/data"
+POSTGRES_LOG_DIR="/var/lib/pgsql/log"
+
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -31,57 +39,179 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if running as root
+print_step() {
+    echo -e "${PURPLE}[STEP]${NC} $1"
+}
+
+print_debug() {
+    echo -e "${CYAN}[DEBUG]${NC} $1"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to wait for service
+wait_for_service() {
+    local service_name=$1
+    local max_attempts=${2:-30}
+    local attempt=1
+    
+    print_status "Waiting for $service_name to be ready..."
+    while [ $attempt -le $max_attempts ]; do
+        if systemctl is-active --quiet "$service_name"; then
+            print_success "$service_name is ready!"
+            return 0
+        fi
+        print_debug "Attempt $attempt/$max_attempts - $service_name not ready yet..."
+        sleep 2
+        ((attempt++))
+    done
+    
+    print_error "$service_name failed to start after $max_attempts attempts"
+    return 1
+}
+
+# Function to backup existing configuration
+backup_config() {
+    local config_file=$1
+    if [ -f "$config_file" ]; then
+        local backup_file="${config_file}.backup.$(date +%Y%m%d_%H%M%S)"
+        print_status "Backing up $config_file to $backup_file"
+        $SUDO_CMD cp "$config_file" "$backup_file"
+    fi
+}
+
+# Determine if we need sudo based on current user
 if [[ $EUID -eq 0 ]]; then
-   print_error "This script should not be run as root. Please run as a regular user."
-   exit 1
+   SUDO_CMD=""  # No sudo needed when running as root
+else
+   # Check if sudo is available
+   if ! command_exists sudo; then
+       print_error "sudo is required but not installed. Please install sudo first."
+       exit 1
+   fi
+   SUDO_CMD="sudo"  # Use sudo when running as regular user
 fi
+
+# Check if dnf is available
+if ! command_exists dnf; then
+    print_error "dnf package manager is required but not found. This script is designed for Rocky Linux/RHEL/CentOS."
+    exit 1
+fi
+
+echo "🚀 Rocky Linux Complete Setup for DenoKV"
+echo "========================================"
+echo ""
+print_status "Configuration: User: $DENOKV_USER, Database: $DENOKV_DATABASE"
+echo ""
+
+# Step 1: Clean up unnecessary scripts
+print_step "Step 1: Cleaning up unnecessary scripts..."
+print_status "Removing redundant setup scripts..."
+rm -f quick-setup.sh setup-existing-postgres.sh 2>/dev/null || true
+print_success "Unnecessary scripts removed!"
+
+# Step 2: Stop and remove existing PostgreSQL
+print_step "Step 2: Stopping and removing existing PostgreSQL..."
+
+# Stop all PostgreSQL-related services
+print_status "Stopping PostgreSQL services..."
+$SUDO_CMD systemctl stop postgresql 2>/dev/null || true
+$SUDO_CMD systemctl disable postgresql 2>/dev/null || true
+
+# Kill any remaining PostgreSQL processes
+print_status "Killing any remaining PostgreSQL processes..."
+$SUDO_CMD pkill -f postgres 2>/dev/null || true
+sleep 2
+
+# Remove PostgreSQL packages
+print_status "Removing PostgreSQL packages..."
+$SUDO_CMD dnf remove -y postgresql* 2>/dev/null || true
+
+# Remove PostgreSQL data directories
+print_status "Removing PostgreSQL data directories..."
+$SUDO_CMD rm -rf /var/lib/pgsql 2>/dev/null || true
+$SUDO_CMD rm -rf /var/lib/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /var/lib/postgres 2>/dev/null || true
+
+# Remove PostgreSQL configuration directories
+print_status "Removing PostgreSQL configuration directories..."
+$SUDO_CMD rm -rf /etc/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /etc/postgresql-common 2>/dev/null || true
+$SUDO_CMD rm -rf /usr/lib/postgresql 2>/dev/null || true
+
+# Remove PostgreSQL user and group
+print_status "Removing PostgreSQL user and group..."
+$SUDO_CMD userdel postgres 2>/dev/null || true
+$SUDO_CMD groupdel postgres 2>/dev/null || true
+
+# Clean up any remaining files
+print_status "Cleaning up remaining PostgreSQL files..."
+$SUDO_CMD rm -rf /tmp/.s.PGSQL.* 2>/dev/null || true
+$SUDO_CMD rm -rf /var/run/postgresql 2>/dev/null || true
+
+print_success "PostgreSQL completely removed!"
+
+# Step 3: Update system and install essential packages
+print_step "Step 3: Installing essential packages..."
 
 # Update system packages
 print_status "Updating system packages..."
-sudo dnf update -y
+$SUDO_CMD dnf update -y
 
 # Install essential development tools
 print_status "Installing essential development tools..."
-sudo dnf groupinstall -y "Development Tools"
-sudo dnf install -y git curl wget vim nano
+$SUDO_CMD dnf groupinstall -y "Development Tools"
+$SUDO_CMD dnf install -y git curl wget vim nano openssl-devel pkg-config
 
-# Install PostgreSQL development libraries
-print_status "Installing PostgreSQL development libraries..."
-sudo dnf install -y postgresql-devel postgresql-server postgresql-contrib
+# Install PostgreSQL packages
+print_status "Installing PostgreSQL packages..."
+$SUDO_CMD dnf install -y postgresql postgresql-server postgresql-contrib postgresql-devel
 
-# Install Docker
-print_status "Installing Docker..."
-if ! command -v docker &> /dev/null; then
+# Install additional useful packages
+print_status "Installing additional packages..."
+$SUDO_CMD dnf install -y postgresql-plpython3 postgresql-plperl 2>/dev/null || true
+
+print_success "Essential packages installed!"
+
+# Step 4: Install Docker
+print_step "Step 4: Installing Docker..."
+
+if ! command_exists docker; then
+    print_status "Installing Docker..."
     # Add Docker repository
-    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    $SUDO_CMD dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    $SUDO_CMD dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Start and enable Docker service
-    sudo systemctl start docker
-    sudo systemctl enable docker
+    $SUDO_CMD systemctl start docker
+    $SUDO_CMD systemctl enable docker
     
     # Add current user to docker group
-    sudo usermod -aG docker $USER
+    $SUDO_CMD usermod -aG docker $USER
     
     print_success "Docker installed successfully"
 else
     print_warning "Docker is already installed"
 fi
 
-# Install Docker Compose (standalone)
+# Step 5: Install Docker Compose (standalone)
 print_status "Installing Docker Compose..."
-if ! command -v docker-compose &> /dev/null; then
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
+if ! command_exists docker-compose; then
+    $SUDO_CMD curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    $SUDO_CMD chmod +x /usr/local/bin/docker-compose
     print_success "Docker Compose installed successfully"
 else
     print_warning "Docker Compose is already installed"
 fi
 
-# Install Rust
-print_status "Installing Rust..."
-if ! command -v cargo &> /dev/null; then
+# Step 6: Install Rust
+print_step "Step 5: Installing Rust..."
+
+if ! command_exists cargo; then
+    print_status "Installing Rust..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     source ~/.cargo/env
     print_success "Rust installed successfully"
@@ -89,684 +219,259 @@ else
     print_warning "Rust is already installed"
 fi
 
-# Install additional dependencies for Rust compilation
-print_status "Installing additional dependencies for Rust compilation..."
-sudo dnf install -y openssl-devel pkg-config
+# Step 7: Initialize PostgreSQL
+print_step "Step 6: Initializing PostgreSQL database..."
 
-# Configure firewall for DenoKV port
-print_status "Configuring firewall for DenoKV..."
-if command -v firewall-cmd &> /dev/null; then
-    sudo firewall-cmd --permanent --add-port=4512/tcp
-    sudo firewall-cmd --reload
-    print_success "Firewall configured - port 4512 is open"
-else
-    print_warning "firewalld not found. You may need to manually open port 4512"
-fi
+# Create PostgreSQL directories with proper permissions
+print_status "Creating PostgreSQL directories..."
+$SUDO_CMD mkdir -p "$POSTGRES_DATA_DIR"
+$SUDO_CMD mkdir -p "$POSTGRES_LOG_DIR"
+$SUDO_CMD mkdir -p /var/run/postgresql
 
-# Clone the repository
-print_status "Cloning DenoKV repository..."
-if [ ! -d "denokv" ]; then
-    git clone https://github.com/codebenderhq/denokv.git
-    cd denokv
-    print_success "Repository cloned successfully"
-else
-    print_warning "Repository directory already exists"
-    cd denokv
-fi
+# Set proper ownership and permissions
+print_status "Setting directory permissions..."
+$SUDO_CMD chown -R postgres:postgres /var/lib/pgsql
+$SUDO_CMD chown -R postgres:postgres /var/run/postgresql
+$SUDO_CMD chmod 700 "$POSTGRES_DATA_DIR"
+$SUDO_CMD chmod 755 "$POSTGRES_LOG_DIR"
+$SUDO_CMD chmod 755 /var/run/postgresql
 
-# Build the project
-print_status "Building the project..."
-source ~/.cargo/env
-cargo build --release
+# Initialize the database
+print_status "Initializing PostgreSQL database..."
+$SUDO_CMD postgresql-setup --initdb
 
-print_success "Build completed successfully"
+print_success "PostgreSQL database initialized!"
 
-# Create a test script
-print_status "Creating test script..."
-cat > test-postgres-integration.sh << 'EOF'
-#!/bin/bash
+# Step 8: Configure PostgreSQL
+print_step "Step 7: Configuring PostgreSQL..."
 
-# Test script for PostgreSQL integration on Rocky Linux
+# Backup existing configuration files
+backup_config "$POSTGRES_DATA_DIR/pg_hba.conf"
+backup_config "$POSTGRES_DATA_DIR/postgresql.conf"
 
-set -e
+# Configure pg_hba.conf for local connections
+print_status "Configuring authentication (pg_hba.conf)..."
+$SUDO_CMD tee "$POSTGRES_DATA_DIR/pg_hba.conf" > /dev/null << 'EOF'
+# PostgreSQL Client Authentication Configuration File
+# ===================================================
+#
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
 
-echo "🧪 Testing PostgreSQL integration..."
-
-# Ensure PostgreSQL service is running
-echo "Ensuring PostgreSQL service is running..."
-sudo systemctl start postgresql
-
-# Wait for PostgreSQL to be ready
-echo "Waiting for PostgreSQL to be ready..."
-until sudo -u postgres pg_isready; do
-  echo "PostgreSQL is not ready yet..."
-  sleep 2
-done
-
-echo "PostgreSQL service is ready!"
-
-# Set environment variables for tests
-export POSTGRES_URL="postgresql://denokv:denokv_password@localhost:5432/denokv"
-export DENO_KV_ACCESS_TOKEN="1234abcd5678efgh"  # Test access token (minimum 12 chars)
-
-# Run the tests
-echo "Running PostgreSQL tests..."
-source ~/.cargo/env
-cargo test --package denokv_postgres test_postgres
-
-# Tests completed - PostgreSQL service remains running
-echo "✅ Tests completed successfully!"
-echo "PostgreSQL service remains running for production use"
+# "local" is for Unix domain socket connections only
+local   all             all                                     trust
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            trust
+host    all             all             0.0.0.0/0               trust
+# IPv6 local connections:
+host    all             all             ::1/128                 trust
+host    all             all             ::/0                    trust
+# Allow replication connections from localhost, by a user with the
+# replication privilege.
+local   replication     all                                     trust
+host    replication     all             127.0.0.1/32            trust
+host    replication     all             ::1/128                 trust
 EOF
 
-# Create a production server startup script
-print_status "Creating production server script..."
-cat > start-denokv-server.sh << 'EOF'
-#!/bin/bash
+# Configure postgresql.conf
+print_status "Configuring PostgreSQL settings..."
+$SUDO_CMD tee /var/lib/pgsql/data/postgresql.conf > /dev/null << 'EOF'
+# PostgreSQL configuration for DenoKV
 
-# Production DenoKV server startup script for Rocky Linux
+# Connection settings
+listen_addresses = 'localhost'
+port = 5432
+max_connections = 100
 
-set -e
+# Memory settings
+shared_buffers = 128MB
+effective_cache_size = 512MB
 
-echo "🚀 Starting DenoKV server..."
+# Logging
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'log'
+log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+log_rotation_age = 1d
+log_rotation_size = 10MB
+log_min_duration_statement = 1000
 
-# Generate access token if not provided
-if [ -z "$DENO_KV_ACCESS_TOKEN" ]; then
-    echo "🔑 Generating secure access token..."
-    if command -v openssl &> /dev/null; then
-        DENO_KV_ACCESS_TOKEN=$(openssl rand -hex 16)
-    elif command -v /dev/urandom &> /dev/null; then
-        DENO_KV_ACCESS_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
-    else
-        echo "❌ Error: Cannot generate access token. Please install openssl or set DENO_KV_ACCESS_TOKEN manually"
-        echo "   Set it with: export DENO_KV_ACCESS_TOKEN='your-secure-token-here'"
-        echo "   Token must be at least 12 characters long"
-        exit 1
-    fi
-    export DENO_KV_ACCESS_TOKEN
-    echo "✅ Generated access token: ${DENO_KV_ACCESS_TOKEN:0:8}..."
-    echo "💾 Save this token securely: $DENO_KV_ACCESS_TOKEN"
-    echo ""
-fi
+# Locale
+lc_messages = 'en_US.UTF-8'
+lc_monetary = 'en_US.UTF-8'
+lc_numeric = 'en_US.UTF-8'
+lc_time = 'en_US.UTF-8'
 
-# Check if PostgreSQL URL is provided
-if [ -z "$DENO_KV_POSTGRES_URL" ]; then
-    echo "❌ Error: DENO_KV_POSTGRES_URL environment variable is required"
-    echo "   Set it with: export DENO_KV_POSTGRES_URL='postgresql://user:pass@host:port/db'"
-    exit 1
-fi
-
-# Set default values
-export DENO_KV_DATABASE_TYPE=${DENO_KV_DATABASE_TYPE:-"postgres"}
-export DENO_KV_NUM_WORKERS=${DENO_KV_NUM_WORKERS:-"4"}
-
-echo "Configuration:"
-echo "  Database Type: $DENO_KV_DATABASE_TYPE"
-echo "  PostgreSQL URL: $DENO_KV_POSTGRES_URL"
-echo "  Access Token: ${DENO_KV_ACCESS_TOKEN:0:8}..." # Show only first 8 chars
-echo "  Workers: $DENO_KV_NUM_WORKERS"
-echo ""
-
-# Start the server
-source ~/.cargo/env
-cargo run --release -- serve --addr 0.0.0.0:4512
+# Default locale for this database
+default_text_search_config = 'pg_catalog.english'
 EOF
 
-chmod +x start-denokv-server.sh
-
-chmod +x test-postgres-integration.sh
-
-# Create a token generation utility script
-print_status "Creating token generation utility..."
-cat > generate-access-token.sh << 'EOF'
-#!/bin/bash
-
-# Utility script to generate secure access tokens for DenoKV
-
-set -e
-
-echo "🔑 DenoKV Access Token Generator"
-echo "================================="
-echo ""
-
-# Generate token using best available method
-if command -v openssl &> /dev/null; then
-    echo "Using OpenSSL for token generation..."
-    TOKEN=$(openssl rand -hex 16)
-elif command -v /dev/urandom &> /dev/null; then
-    echo "Using /dev/urandom for token generation..."
-    TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
-else
-    echo "❌ Error: No secure random generator available"
-    echo "Please install openssl or use a manual token"
-    exit 1
-fi
-
-echo ""
-echo "✅ Generated secure access token:"
-echo "   $TOKEN"
-echo ""
-echo "📋 To use this token:"
-echo "   export DENO_KV_ACCESS_TOKEN='$TOKEN'"
-echo ""
-echo "🔒 Security notes:"
-echo "   - Keep this token secure and private"
-echo "   - Don't commit it to version control"
-echo "   - Use it in your Deno applications for remote access"
-echo "   - Token length: ${#TOKEN} characters (minimum required: 12)"
-echo ""
-
-# Optionally save to a file
-read -p "💾 Save token to .env file? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "DENO_KV_ACCESS_TOKEN='$TOKEN'" > .env
-    echo "✅ Token saved to .env file"
-    echo "   Source it with: source .env"
-fi
-EOF
-
-chmod +x generate-access-token.sh
-
-# Create a service management script
-print_status "Creating service management script..."
-cat > manage-services.sh << 'EOF'
-#!/bin/bash
-
-# Service management script for DenoKV on Rocky Linux
-
-set -e
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-
-case "${1:-help}" in
-    start)
-        print_status "Starting all services..."
-        
-        # Start PostgreSQL service
-        print_status "Starting PostgreSQL service..."
-        sudo systemctl start postgresql
-        
-        # Wait for PostgreSQL
-        until sudo -u postgres pg_isready; do
-            echo "Waiting for PostgreSQL..."
-            sleep 2
-        done
-        print_success "PostgreSQL service started"
-        
-        # Start DenoKV server
-        print_status "Starting DenoKV server..."
-        source ~/.cargo/env
-        source .env 2>/dev/null || true
-        
-        if pgrep -f "denokv.*serve" > /dev/null; then
-            print_warning "DenoKV server is already running"
-        else
-            nohup cargo run --release -- serve --addr 0.0.0.0:4512 > denokv.log 2>&1 &
-            sleep 2
-            if pgrep -f "denokv.*serve" > /dev/null; then
-                print_success "DenoKV server started"
-            else
-                print_error "Failed to start DenoKV server"
-            fi
-        fi
-        ;;
-        
-    stop)
-        print_status "Stopping DenoKV server..."
-        
-        # Stop DenoKV server only
-        if pgrep -f "denokv.*serve" > /dev/null; then
-            pkill -f "denokv.*serve"
-            print_success "DenoKV server stopped"
-        else
-            print_warning "DenoKV server was not running"
-        fi
-        
-        print_status "PostgreSQL service remains running (persistent)"
-        ;;
-        
-    restart)
-        $0 stop
-        sleep 2
-        $0 start
-        ;;
-        
-    stop-postgres)
-        print_status "Stopping PostgreSQL service..."
-        sudo systemctl stop postgresql
-        print_success "PostgreSQL service stopped"
-        print_warning "Note: DenoKV server will not work without PostgreSQL"
-        ;;
-        
-    start-postgres)
-        print_status "Starting PostgreSQL service..."
-        sudo systemctl start postgresql
-        until sudo -u postgres pg_isready; do
-            echo "Waiting for PostgreSQL..."
-            sleep 2
-        done
-        print_success "PostgreSQL service started"
-        ;;
-        
-    status)
-        print_status "Service Status:"
-        echo ""
-        
-        # Check PostgreSQL service
-        if systemctl is-active --quiet postgresql; then
-            print_success "PostgreSQL Service: Running"
-        else
-            print_warning "PostgreSQL Service: Stopped"
-        fi
-        
-        # Check DenoKV server
-        if pgrep -f "denokv.*serve" > /dev/null; then
-            print_success "DenoKV Server: Running (PID: $(pgrep -f 'denokv.*serve'))"
-        else
-            print_warning "DenoKV Server: Stopped"
-        fi
-        
-        # Check port 4512
-        if netstat -tlnp 2>/dev/null | grep -q ":4512 "; then
-            print_success "Port 4512: Open"
-        else
-            print_warning "Port 4512: Closed"
-        fi
-        ;;
-        
-    logs)
-        if [ -f "denokv.log" ]; then
-            tail -f denokv.log
-        else
-            print_warning "No log file found"
-        fi
-        ;;
-        
-    *)
-        echo "DenoKV Service Manager"
-        echo "Usage: $0 {start|stop|restart|status|logs|start-postgres|stop-postgres}"
-        echo ""
-        echo "Commands:"
-        echo "  start         - Start DenoKV server (PostgreSQL must be running)"
-        echo "  stop          - Stop DenoKV server only (PostgreSQL stays running)"
-        echo "  restart       - Restart DenoKV server only"
-        echo "  status        - Show service status"
-        echo "  logs          - Show DenoKV server logs"
-        echo "  start-postgres - Start PostgreSQL service"
-        echo "  stop-postgres  - Stop PostgreSQL service (use with caution)"
-        echo ""
-        echo "Note: PostgreSQL runs as a persistent system service"
-        echo "      DenoKV server can be started/stopped independently"
-        ;;
-esac
-EOF
-
-chmod +x manage-services.sh
-
-# Create a PostgreSQL authentication fix script
-print_status "Creating PostgreSQL authentication fix script..."
-cat > fix-postgres-auth.sh << 'EOF'
-#!/bin/bash
-
-# PostgreSQL Authentication Fix Script for Rocky Linux
-
-set -e
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-
-echo "🔧 PostgreSQL Authentication Fix Script"
-echo "======================================="
-echo ""
-
-# Check if PostgreSQL is running
-if ! systemctl is-active --quiet postgresql; then
-    print_status "Starting PostgreSQL service..."
-    sudo systemctl start postgresql
-fi
-
-# Find pg_hba.conf
-PG_HBA_PATHS=(
-    "/var/lib/pgsql/data/pg_hba.conf"
-    "/var/lib/postgresql/data/pg_hba.conf"
-    "/etc/postgresql/*/main/pg_hba.conf"
-)
-
-PG_HBA_PATH=""
-for path in "${PG_HBA_PATHS[@]}"; do
-    if [ -f "$path" ] || ls $path 2>/dev/null; then
-        PG_HBA_PATH="$path"
-        break
-    fi
-done
-
-if [ -z "$PG_HBA_PATH" ]; then
-    print_error "Could not find pg_hba.conf file"
-    print_status "Trying to find PostgreSQL data directory..."
-    sudo -u postgres psql -c "SHOW data_directory;" 2>/dev/null || true
-    exit 1
-fi
-
-print_status "Found pg_hba.conf at: $PG_HBA_PATH"
-
-# Backup the original file
-print_status "Creating backup of pg_hba.conf..."
-sudo cp "$PG_HBA_PATH" "$PG_HBA_PATH.backup.$(date +%Y%m%d_%H%M%S)"
-
-# Update authentication methods
-print_status "Updating authentication methods..."
-sudo sed -i 's/local   all             all                                     ident/local   all             all                                     md5/g' "$PG_HBA_PATH"
-sudo sed -i 's/local   all             all                                     peer/local   all             all                                     md5/g' "$PG_HBA_PATH"
-sudo sed -i 's/local   all             all                                     trust/local   all             all                                     md5/g' "$PG_HBA_PATH"
-
-# Add explicit entry for denokv user if not present
-if ! grep -q "denokv" "$PG_HBA_PATH"; then
-    print_status "Adding explicit entry for denokv user..."
-    echo "local   denokv          denokv                                  md5" | sudo tee -a "$PG_HBA_PATH"
-fi
-
-# Reload PostgreSQL configuration
-print_status "Reloading PostgreSQL configuration..."
-sudo systemctl reload postgresql
-
-# Test connection
-print_status "Testing database connection..."
-if PGPASSWORD='denokv_password' psql -h localhost -U denokv -d denokv -c "SELECT 1;" >/dev/null 2>&1; then
-    print_success "Database connection test successful!"
-else
-    print_warning "Database connection test failed"
-    print_status "You may need to restart PostgreSQL: sudo systemctl restart postgresql"
-fi
-
-print_success "PostgreSQL authentication fix completed!"
-echo ""
-print_status "If you still have issues, try:"
-echo "  sudo systemctl restart postgresql"
-echo "  ./manage-services.sh restart"
-EOF
-
-chmod +x fix-postgres-auth.sh
-
-print_success "Scripts created successfully"
-
-# Install and configure PostgreSQL server
-print_status "Installing and configuring PostgreSQL server..."
-sudo dnf install -y postgresql-server postgresql-contrib
-
-# Check if PostgreSQL is already initialized
-if [ -d "/var/lib/pgsql/data" ] && [ "$(ls -A /var/lib/pgsql/data)" ]; then
-    print_status "PostgreSQL database already initialized"
-else
-    print_status "Initializing PostgreSQL database..."
-    sudo postgresql-setup --initdb
-fi
-
-# Start and enable PostgreSQL service
-print_status "Starting PostgreSQL service..."
-sudo systemctl start postgresql
-sudo systemctl enable postgresql
+# Step 9: Start PostgreSQL
+print_status "Step 8: Starting PostgreSQL service..."
+$SUDO_CMD systemctl enable postgresql
+$SUDO_CMD systemctl start postgresql
 
 # Wait for PostgreSQL to be ready
 print_status "Waiting for PostgreSQL to be ready..."
-until sudo -u postgres pg_isready; do
-  echo "PostgreSQL is not ready yet..."
-  sleep 2
+for i in {1..30}; do
+    if $SUDO_CMD -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+        print_success "PostgreSQL is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        print_error "PostgreSQL failed to start after 30 seconds"
+        exit 1
+    fi
+    sleep 1
 done
 
-print_success "PostgreSQL service is ready!"
+# Step 10: Create DenoKV database and user
+print_status "Step 9: Creating DenoKV database and user..."
 
-# Configure PostgreSQL authentication
-print_status "Configuring PostgreSQL authentication..."
-sudo -u postgres psql -c "ALTER SYSTEM SET listen_addresses = 'localhost';" 2>/dev/null || true
+# Set password for postgres user first
+print_status "Setting password for postgres user..."
+$SUDO_CMD -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres_password';" 2>/dev/null || print_warning "Could not set postgres password"
 
-# Update pg_hba.conf to allow password authentication
-PG_HBA_PATH="/var/lib/pgsql/data/pg_hba.conf"
-if [ -f "$PG_HBA_PATH" ]; then
-    print_status "Updating pg_hba.conf for password authentication..."
-    sudo cp "$PG_HBA_PATH" "$PG_HBA_PATH.backup"
-    
-    # Replace ident with md5 for local connections
-    sudo sed -i 's/local   all             all                                     ident/local   all             all                                     md5/g' "$PG_HBA_PATH"
-    sudo sed -i 's/local   all             all                                     peer/local   all             all                                     md5/g' "$PG_HBA_PATH"
-    
-    # Restart PostgreSQL to apply changes
-    sudo systemctl restart postgresql
-    sleep 3
-    print_success "PostgreSQL authentication configured"
+# Create denokv user
+print_status "Creating denokv user..."
+$SUDO_CMD -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User denokv may already exist"
+
+# Create denokv database
+print_status "Creating denokv database..."
+$SUDO_CMD -u postgres psql -c "CREATE DATABASE denokv OWNER denokv;" 2>/dev/null || print_warning "Database denokv may already exist"
+
+# Grant privileges
+print_status "Granting privileges..."
+$SUDO_CMD -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;"
+$SUDO_CMD -u postgres psql -c "GRANT ALL PRIVILEGES ON SCHEMA public TO denokv;" 2>/dev/null || true
+
+# Step 11: Test connection
+print_status "Step 10: Testing database connection..."
+if $SUDO_CMD -u postgres psql -d denokv -c "SELECT current_database(), current_user;" >/dev/null 2>&1; then
+    print_success "Database connection test passed!"
 else
-    print_warning "pg_hba.conf not found at $PG_HBA_PATH"
+    print_error "Database connection test failed"
+    exit 1
 fi
 
-# Create DenoKV database and user
-print_status "Setting up DenoKV database..."
-sudo -u postgres psql -c "CREATE DATABASE denokv;" 2>/dev/null || print_warning "Database 'denokv' may already exist"
-sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User 'denokv' may already exist"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;" 2>/dev/null || true
-sudo -u postgres psql -c "ALTER USER denokv CREATEDB;" 2>/dev/null || true
+# Step 12: Set up environment variables
+print_step "Step 11: Setting up environment variables..."
 
-# Test the connection
-print_status "Testing database connection..."
-if PGPASSWORD='denokv_password' psql -h localhost -U denokv -d denokv -c "SELECT 1;" >/dev/null 2>&1; then
-    print_success "Database connection test successful!"
-else
-    print_warning "Database connection test failed, but continuing..."
-fi
-
-print_success "DenoKV database and user created!"
-
-# Set up environment variables
-print_status "Setting up environment variables..."
-export DENO_KV_POSTGRES_URL="postgresql://denokv:denokv_password@localhost:5432/denokv"
-export DENO_KV_DATABASE_TYPE="postgres"
-
-# Generate access token if not set
-if [ -z "$DENO_KV_ACCESS_TOKEN" ]; then
-    print_status "Generating access token..."
-    if command -v openssl &> /dev/null; then
-        DENO_KV_ACCESS_TOKEN=$(openssl rand -hex 16)
-    else
-        DENO_KV_ACCESS_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
-    fi
-    export DENO_KV_ACCESS_TOKEN
-    print_success "Generated access token: ${DENO_KV_ACCESS_TOKEN:0:8}..."
-fi
-
-# Create environment file for persistence
-print_status "Creating .env file for environment variables..."
+# Create environment file
+print_status "Creating environment configuration..."
 cat > .env << EOF
-DENO_KV_POSTGRES_URL=postgresql://denokv:denokv_password@localhost:5432/denokv
-DENO_KV_DATABASE_TYPE=postgres
-DENO_KV_ACCESS_TOKEN=$DENO_KV_ACCESS_TOKEN
-DENO_KV_NUM_WORKERS=4
+# DenoKV PostgreSQL Configuration
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=denokv
+POSTGRES_USER=denokv
+POSTGRES_PASSWORD=denokv_password
+
+# DenoKV Server Configuration
+DENOKV_PORT=4512
+DENOKV_ACCESS_TOKEN=d4f2332c86df1ec68911c73b51c9dbad
+
+# Development Configuration
+RUST_LOG=debug
+DENO_ENV=development
 EOF
 
-print_success "Environment file created: .env"
-
-# Run integration tests
-print_status "Running PostgreSQL integration tests..."
-source ~/.cargo/env
-if cargo test --package denokv_postgres test_postgres; then
-    print_success "Integration tests passed!"
-else
-    print_warning "Integration tests failed, but continuing with setup..."
+# Add environment variables to shell profile
+print_status "Adding environment variables to shell profile..."
+if [ -f ~/.bashrc ]; then
+    echo "" >> ~/.bashrc
+    echo "# DenoKV Environment Variables" >> ~/.bashrc
+    echo "export POSTGRES_HOST=localhost" >> ~/.bashrc
+    echo "export POSTGRES_PORT=5432" >> ~/.bashrc
+    echo "export POSTGRES_DB=denokv" >> ~/.bashrc
+    echo "export POSTGRES_USER=denokv" >> ~/.bashrc
+    echo "export POSTGRES_PASSWORD=denokv_password" >> ~/.bashrc
+    echo "export DENOKV_PORT=4512" >> ~/.bashrc
+    echo "export DENOKV_ACCESS_TOKEN=d4f2332c86df1ec68911c73b51c9dbad" >> ~/.bashrc
+    echo "export RUST_LOG=debug" >> ~/.bashrc
+    echo "export DENO_ENV=development" >> ~/.bashrc
 fi
 
-# Start DenoKV server in background
-print_status "Starting DenoKV server..."
-source ~/.cargo/env
-nohup cargo run --release -- serve --addr 0.0.0.0:4512 > denokv.log 2>&1 &
-DENOKV_PID=$!
-
-# Wait a moment for server to start
-sleep 3
-
-# Check if server started successfully
-if kill -0 $DENOKV_PID 2>/dev/null; then
-    print_success "DenoKV server started successfully!"
-    print_status "Server PID: $DENOKV_PID"
-    print_status "Log file: denokv.log"
-    print_status "Server running on: http://0.0.0.0:4512"
-else
-    print_warning "DenoKV server may not have started properly"
-    print_status "Check denokv.log for details"
+if [ -f ~/.bash_profile ]; then
+    echo "" >> ~/.bash_profile
+    echo "# DenoKV Environment Variables" >> ~/.bash_profile
+    echo "export POSTGRES_HOST=localhost" >> ~/.bash_profile
+    echo "export POSTGRES_PORT=5432" >> ~/.bash_profile
+    echo "export POSTGRES_DB=denokv" >> ~/.bash_profile
+    echo "export POSTGRES_USER=denokv" >> ~/.bash_profile
+    echo "export POSTGRES_PASSWORD=denokv_password" >> ~/.bash_profile
+    echo "export DENOKV_PORT=4512" >> ~/.bash_profile
+    echo "export DENOKV_ACCESS_TOKEN=d4f2332c86df1ec68911c73b51c9dbad" >> ~/.bash_profile
+    echo "export RUST_LOG=debug" >> ~/.bash_profile
+    echo "export DENO_ENV=development" >> ~/.bash_profile
 fi
 
-# Create a README for the setup
-print_status "Creating setup README..."
-cat > ROCKY_LINUX_SETUP.md << 'EOF'
-# Rocky Linux Setup for DenoKV PostgreSQL Testing
+# Source the environment variables for current session
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DB=denokv
+export POSTGRES_USER=denokv
+export POSTGRES_PASSWORD=denokv_password
+export DENOKV_PORT=4512
+export DENOKV_ACCESS_TOKEN=d4f2332c86df1ec68911c73b51c9dbad
+export RUST_LOG=debug
+export DENO_ENV=development
 
-This document describes how to set up a Rocky Linux environment for testing DenoKV PostgreSQL integration.
+print_success "Environment variables configured!"
 
-## Prerequisites
-
-- Rocky Linux 8 or 9
-- Internet connection
-- Non-root user with sudo privileges
-
-## Quick Setup
-
-Run the setup script:
-
-```bash
-chmod +x setup-rocky-linux.sh
-./setup-rocky-linux.sh
-```
-
-## What the Setup Script Does
-
-1. **Updates system packages** - Ensures all packages are up to date
-2. **Installs development tools** - Installs essential development packages
-3. **Installs PostgreSQL development libraries** - Required for PostgreSQL backend compilation
-4. **Installs Docker and Docker Compose** - For running PostgreSQL test container
-5. **Installs Rust** - Required for building the project
-6. **Installs additional dependencies** - OpenSSL and pkg-config for Rust compilation
-7. **Clones the repository** - Downloads the DenoKV source code
-8. **Builds the project** - Compiles all components
-9. **Creates test script** - Generates a script to run PostgreSQL integration tests
-
-## Running Tests
-
-After setup, you can run the PostgreSQL integration tests:
-
-```bash
-./test-postgres-integration.sh
-```
-
-## Manual Steps After Setup
-
-1. **Log out and log back in** - This ensures Docker group membership takes effect
-2. **Verify Docker access** - Run `docker ps` to confirm Docker is accessible
-3. **Run tests** - Execute the test script to verify everything works
-
-## Troubleshooting
-
-### Docker Permission Issues
-If you get permission denied errors with Docker:
-```bash
-sudo usermod -aG docker $USER
-# Then log out and log back in
-```
-
-### Rust Not Found
-If Rust commands are not found:
-```bash
-source ~/.cargo/env
-```
-
-### PostgreSQL Connection Issues
-Make sure the PostgreSQL container is running:
-```bash
-docker-compose -f docker-compose.test.yml ps
-```
-
-## Project Structure
-
-- `denokv/` - Main DenoKV project
-- `postgres/` - PostgreSQL backend implementation
-- `docker-compose.test.yml` - Docker Compose file (not used in production)
-- `test-postgres.sh` - Original test script
-- `test-postgres-integration.sh` - Enhanced test script for Rocky Linux
-
-## Environment Variables
-
-The production setup uses the following environment variables:
-- `DENO_KV_POSTGRES_URL=postgresql://denokv:denokv_password@localhost:5432/denokv`
-- `DENO_KV_ACCESS_TOKEN=<generated-token>`
-
-## Cleanup
-
-To stop the PostgreSQL service (use with caution):
-```bash
-sudo systemctl stop postgresql
-```
-
-To stop the DenoKV server:
-```bash
-./manage-services.sh stop
-```
-EOF
-
-print_success "Setup README created successfully"
-
+# Step 13: Display final information
+print_success "Rocky Linux setup completed successfully!"
 echo ""
-print_success "🎉 Complete setup finished successfully!"
+echo "📋 Connection Information:"
+echo "========================="
+echo "Host: localhost"
+echo "Port: 5432"
 echo ""
-print_status "What's been set up:"
-echo "✅ All dependencies installed (Rust, Docker, PostgreSQL dev libraries)"
-echo "✅ PostgreSQL database running in Docker"
-echo "✅ Environment variables configured (.env file created)"
-echo "✅ Access token generated and saved"
-echo "✅ Integration tests run"
-echo "✅ DenoKV server started and running"
-echo "✅ Port 4512 opened in firewall"
+echo "🔐 User Credentials:"
+echo "postgres user: postgres / postgres_password"
+echo "denokv user: denokv / denokv_password"
 echo ""
-print_status "Current status:"
-echo "  🐘 PostgreSQL: Running as system service (port 5432)"
-echo "  🗄️  Database: denokv (user: denokv)"
-echo "  🚀 DenoKV Server: Running on http://0.0.0.0:4512"
-echo "  🔑 Access Token: ${DENO_KV_ACCESS_TOKEN:0:8}... (saved in .env)"
-echo "  📝 Log File: denokv.log"
-echo "  🆔 Server PID: $DENOKV_PID"
+echo "🗄️ Database: denokv"
 echo ""
-print_status "Ready for remote connections!"
-echo "  Connect from Deno apps using: http://your-server-ip:4512"
-echo "  Access token: $DENO_KV_ACCESS_TOKEN"
+echo "🌍 Environment Variables:"
+echo "POSTGRES_HOST=localhost"
+echo "POSTGRES_PORT=5432"
+echo "POSTGRES_DB=denokv"
+echo "POSTGRES_USER=denokv"
+echo "POSTGRES_PASSWORD=denokv_password"
+echo "DENOKV_PORT=4512"
+echo "DENOKV_ACCESS_TOKEN=d4f2332c86df1ec68911c73b51c9dbad"
 echo ""
-print_status "Management commands:"
-echo "  ./manage-services.sh start    - Start DenoKV server"
-echo "  ./manage-services.sh stop     - Stop DenoKV server (PostgreSQL stays running)"
-echo "  ./manage-services.sh restart  - Restart DenoKV server"
-echo "  ./manage-services.sh status   - Check service status"
-echo "  ./manage-services.sh logs     - View server logs"
-echo "  ./manage-services.sh start-postgres - Start PostgreSQL service"
-echo "  ./manage-services.sh stop-postgres  - Stop PostgreSQL service"
-echo "  ./fix-postgres-auth.sh        - Fix PostgreSQL authentication issues"
-echo "  ./test-postgres-integration.sh - Run tests again"
-echo "  ./generate-access-token.sh     - Generate new token"
-echo "  ./upgrade-denokv.sh            - Update and rebuild"
+echo "🔧 Test connections:"
+echo "$SUDO_CMD -u postgres psql -d denokv"
+echo "psql -h localhost -p 5432 -U denokv -d denokv"
 echo ""
-print_status "Setup documentation: ROCKY_LINUX_SETUP.md"
+echo "🚀 You can now run your DenoKV setup script!"
 echo ""
-print_warning "Note: You may need to restart your terminal or run 'source ~/.cargo/env' to use Rust commands"
-print_warning "Security: Your access token is saved in .env file - keep it secure!"
+
+# Step 14: Optional - Enable password authentication
+read -p "Do you want to enable password authentication? (y/N): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    print_status "Enabling password authentication..."
+    
+    # Update pg_hba.conf to use md5
+    $SUDO_CMD sed -i 's/trust/md5/g' /var/lib/pgsql/data/pg_hba.conf
+    
+    # Reload PostgreSQL
+    $SUDO_CMD systemctl reload postgresql
+    
+    print_success "Password authentication enabled!"
+    print_warning "You will now need to use passwords for database connections"
+else
+    print_status "Password authentication remains disabled (trust mode)"
+    print_warning "This is less secure but easier for development"
+fi
+
+print_success "Rocky Linux complete setup finished! 🎉"
+echo ""
+echo "📝 Next steps:"
+echo "1. Run: source ~/.bashrc (to load environment variables)"
+echo "2. Run: ./fresh-postgres-setup.sh (if you need a fresh PostgreSQL setup)"
+echo "3. Run: ./setup-existing-postgres.sh (to configure DenoKV)"
+echo "4. Start your DenoKV server!"
+echo ""

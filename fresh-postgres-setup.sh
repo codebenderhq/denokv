@@ -84,20 +84,20 @@ backup_config() {
     if [ -f "$config_file" ]; then
         local backup_file="${config_file}.backup.$(date +%Y%m%d_%H%M%S)"
         print_status "Backing up $config_file to $backup_file"
-        sudo cp "$config_file" "$backup_file"
+        $SUDO_CMD cp "$config_file" "$backup_file"
     fi
 }
 
-# Check if running as root
+# Determine if we need sudo based on current user
 if [[ $EUID -eq 0 ]]; then
-   print_error "This script should not be run as root. Please run as a regular user with sudo privileges."
-   exit 1
-fi
-
-# Check if sudo is available
-if ! command_exists sudo; then
-    print_error "sudo is required but not installed. Please install sudo first."
-    exit 1
+   SUDO_CMD=""  # No sudo needed when running as root
+else
+   # Check if sudo is available
+   if ! command_exists sudo; then
+       print_error "sudo is required but not installed. Please install sudo first."
+       exit 1
+   fi
+   SUDO_CMD="sudo"  # Use sudo when running as regular user
 fi
 
 # Check if dnf is available
@@ -115,39 +115,39 @@ print_step "Step 1: Stopping and removing existing PostgreSQL..."
 
 # Stop all PostgreSQL-related services
 print_status "Stopping PostgreSQL services..."
-sudo systemctl stop postgresql 2>/dev/null || true
-sudo systemctl disable postgresql 2>/dev/null || true
+$SUDO_CMD systemctl stop postgresql 2>/dev/null || true
+$SUDO_CMD systemctl disable postgresql 2>/dev/null || true
 
 # Kill any remaining PostgreSQL processes
 print_status "Killing any remaining PostgreSQL processes..."
-sudo pkill -f postgres 2>/dev/null || true
+$SUDO_CMD pkill -f postgres 2>/dev/null || true
 sleep 2
 
 # Remove PostgreSQL packages
 print_status "Removing PostgreSQL packages..."
-sudo dnf remove -y postgresql* 2>/dev/null || true
+$SUDO_CMD dnf remove -y postgresql* 2>/dev/null || true
 
 # Remove PostgreSQL data directories
 print_status "Removing PostgreSQL data directories..."
-sudo rm -rf /var/lib/pgsql 2>/dev/null || true
-sudo rm -rf /var/lib/postgresql 2>/dev/null || true
-sudo rm -rf /var/lib/postgres 2>/dev/null || true
+$SUDO_CMD rm -rf /var/lib/pgsql 2>/dev/null || true
+$SUDO_CMD rm -rf /var/lib/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /var/lib/postgres 2>/dev/null || true
 
 # Remove PostgreSQL configuration directories
 print_status "Removing PostgreSQL configuration directories..."
-sudo rm -rf /etc/postgresql 2>/dev/null || true
-sudo rm -rf /etc/postgresql-common 2>/dev/null || true
-sudo rm -rf /usr/lib/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /etc/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /etc/postgresql-common 2>/dev/null || true
+$SUDO_CMD rm -rf /usr/lib/postgresql 2>/dev/null || true
 
 # Remove PostgreSQL user and group
 print_status "Removing PostgreSQL user and group..."
-sudo userdel postgres 2>/dev/null || true
-sudo groupdel postgres 2>/dev/null || true
+$SUDO_CMD userdel postgres 2>/dev/null || true
+$SUDO_CMD groupdel postgres 2>/dev/null || true
 
 # Clean up any remaining files
 print_status "Cleaning up remaining PostgreSQL files..."
-sudo rm -rf /tmp/.s.PGSQL.* 2>/dev/null || true
-sudo rm -rf /var/run/postgresql 2>/dev/null || true
+$SUDO_CMD rm -rf /tmp/.s.PGSQL.* 2>/dev/null || true
+$SUDO_CMD rm -rf /var/run/postgresql 2>/dev/null || true
 
 print_success "PostgreSQL completely removed!"
 
@@ -156,15 +156,15 @@ print_step "Step 2: Installing fresh PostgreSQL..."
 
 # Update system packages
 print_status "Updating system packages..."
-sudo dnf update -y
+$SUDO_CMD dnf update -y
 
 # Install PostgreSQL packages
 print_status "Installing PostgreSQL packages..."
-sudo dnf install -y postgresql postgresql-server postgresql-contrib postgresql-devel
+$SUDO_CMD dnf install -y postgresql postgresql-server postgresql-contrib postgresql-devel
 
 # Install additional useful packages
 print_status "Installing additional packages..."
-sudo dnf install -y postgresql-plpython3 postgresql-plperl 2>/dev/null || true
+$SUDO_CMD dnf install -y postgresql-plpython3 postgresql-plperl 2>/dev/null || true
 
 print_success "PostgreSQL packages installed!"
 
@@ -173,21 +173,21 @@ print_step "Step 3: Initializing PostgreSQL database..."
 
 # Create PostgreSQL directories with proper permissions
 print_status "Creating PostgreSQL directories..."
-sudo mkdir -p "$POSTGRES_DATA_DIR"
-sudo mkdir -p "$POSTGRES_LOG_DIR"
-sudo mkdir -p /var/run/postgresql
+$SUDO_CMD mkdir -p "$POSTGRES_DATA_DIR"
+$SUDO_CMD mkdir -p "$POSTGRES_LOG_DIR"
+$SUDO_CMD mkdir -p /var/run/postgresql
 
 # Set proper ownership and permissions
 print_status "Setting directory permissions..."
-sudo chown -R postgres:postgres /var/lib/pgsql
-sudo chown -R postgres:postgres /var/run/postgresql
-sudo chmod 700 "$POSTGRES_DATA_DIR"
-sudo chmod 755 "$POSTGRES_LOG_DIR"
-sudo chmod 755 /var/run/postgresql
+$SUDO_CMD chown -R postgres:postgres /var/lib/pgsql
+$SUDO_CMD chown -R postgres:postgres /var/run/postgresql
+$SUDO_CMD chmod 700 "$POSTGRES_DATA_DIR"
+$SUDO_CMD chmod 755 "$POSTGRES_LOG_DIR"
+$SUDO_CMD chmod 755 /var/run/postgresql
 
 # Initialize the database
 print_status "Initializing PostgreSQL database..."
-sudo postgresql-setup --initdb
+$SUDO_CMD postgresql-setup --initdb
 
 print_success "PostgreSQL database initialized!"
 
@@ -200,7 +200,7 @@ backup_config "$POSTGRES_DATA_DIR/postgresql.conf"
 
 # Configure pg_hba.conf for local connections
 print_status "Configuring authentication (pg_hba.conf)..."
-sudo tee "$POSTGRES_DATA_DIR/pg_hba.conf" > /dev/null << 'EOF'
+$SUDO_CMD tee "$POSTGRES_DATA_DIR/pg_hba.conf" > /dev/null << 'EOF'
 # PostgreSQL Client Authentication Configuration File
 # ===================================================
 #
@@ -223,7 +223,7 @@ EOF
 
 # Configure postgresql.conf
 print_status "Configuring PostgreSQL settings..."
-sudo tee /var/lib/pgsql/data/postgresql.conf > /dev/null << 'EOF'
+$SUDO_CMD tee /var/lib/pgsql/data/postgresql.conf > /dev/null << 'EOF'
 # PostgreSQL configuration for DenoKV
 
 # Connection settings
@@ -256,13 +256,13 @@ EOF
 
 # Step 5: Start PostgreSQL
 print_status "Step 5: Starting PostgreSQL service..."
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
+$SUDO_CMD systemctl enable postgresql
+$SUDO_CMD systemctl start postgresql
 
 # Wait for PostgreSQL to be ready
 print_status "Waiting for PostgreSQL to be ready..."
 for i in {1..30}; do
-    if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+    if $SUDO_CMD -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
         print_success "PostgreSQL is ready!"
         break
     fi
@@ -278,24 +278,24 @@ print_status "Step 6: Creating DenoKV database and user..."
 
 # Set password for postgres user first
 print_status "Setting password for postgres user..."
-sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres_password';" 2>/dev/null || print_warning "Could not set postgres password"
+$SUDO_CMD -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres_password';" 2>/dev/null || print_warning "Could not set postgres password"
 
 # Create denokv user
 print_status "Creating denokv user..."
-sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User denokv may already exist"
+$SUDO_CMD -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User denokv may already exist"
 
 # Create denokv database
 print_status "Creating denokv database..."
-sudo -u postgres psql -c "CREATE DATABASE denokv OWNER denokv;" 2>/dev/null || print_warning "Database denokv may already exist"
+$SUDO_CMD -u postgres psql -c "CREATE DATABASE denokv OWNER denokv;" 2>/dev/null || print_warning "Database denokv may already exist"
 
 # Grant privileges
 print_status "Granting privileges..."
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON SCHEMA public TO denokv;" 2>/dev/null || true
+$SUDO_CMD -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;"
+$SUDO_CMD -u postgres psql -c "GRANT ALL PRIVILEGES ON SCHEMA public TO denokv;" 2>/dev/null || true
 
 # Step 7: Test connection
 print_status "Step 7: Testing database connection..."
-if sudo -u postgres psql -d denokv -c "SELECT current_database(), current_user;" >/dev/null 2>&1; then
+if $SUDO_CMD -u postgres psql -d denokv -c "SELECT current_database(), current_user;" >/dev/null 2>&1; then
     print_success "Database connection test passed!"
 else
     print_error "Database connection test failed"
@@ -330,10 +330,10 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     print_status "Enabling password authentication..."
     
     # Update pg_hba.conf to use md5
-    sudo sed -i 's/trust/md5/g' /var/lib/pgsql/data/pg_hba.conf
+    $SUDO_CMD sed -i 's/trust/md5/g' /var/lib/pgsql/data/pg_hba.conf
     
     # Reload PostgreSQL
-    sudo systemctl reload postgresql
+    $SUDO_CMD systemctl reload postgresql
     
     print_success "Password authentication enabled!"
     print_warning "You will now need to use passwords for database connections"
