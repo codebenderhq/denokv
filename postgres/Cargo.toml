@@ -1,0 +1,31 @@
+[package]
+name = "denokv_postgres"
+version = "0.12.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/denoland/denokv"
+authors = ["rawkakani"]
+
+[lib]
+name = "denokv_postgres"
+path = "lib.rs"
+
+[dependencies]
+denokv_proto = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = "0.7"
+deadpool-postgres = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+deno_error = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+rusqlite = { workspace = true }
