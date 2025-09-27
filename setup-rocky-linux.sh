@@ -132,18 +132,18 @@ set -e
 
 echo "🧪 Testing PostgreSQL integration..."
 
-# Start PostgreSQL container
-echo "Starting PostgreSQL container..."
-docker-compose -f docker-compose.test.yml up -d postgres
+# Ensure PostgreSQL service is running
+echo "Ensuring PostgreSQL service is running..."
+sudo systemctl start postgresql
 
 # Wait for PostgreSQL to be ready
 echo "Waiting for PostgreSQL to be ready..."
-until docker-compose -f docker-compose.test.yml exec postgres pg_isready -U postgres; do
+until sudo -u postgres pg_isready; do
   echo "PostgreSQL is not ready yet..."
   sleep 2
 done
 
-echo "PostgreSQL is ready!"
+echo "PostgreSQL service is ready!"
 
 # Set environment variables for tests
 export POSTGRES_URL="postgresql://denokv:denokv_password@localhost:5432/denokv"
@@ -154,11 +154,9 @@ echo "Running PostgreSQL tests..."
 source ~/.cargo/env
 cargo test --package denokv_postgres test_postgres
 
-# Clean up
-echo "Cleaning up..."
-docker-compose -f docker-compose.test.yml down
-
+# Tests completed - PostgreSQL service remains running
 echo "✅ Tests completed successfully!"
+echo "PostgreSQL service remains running for production use"
 EOF
 
 # Create a production server startup script
@@ -581,20 +579,26 @@ docker-compose -f docker-compose.test.yml ps
 
 - `denokv/` - Main DenoKV project
 - `postgres/` - PostgreSQL backend implementation
-- `docker-compose.test.yml` - PostgreSQL test container configuration
+- `docker-compose.test.yml` - Docker Compose file (not used in production)
 - `test-postgres.sh` - Original test script
 - `test-postgres-integration.sh` - Enhanced test script for Rocky Linux
 
 ## Environment Variables
 
-The test script sets the following environment variable:
-- `POSTGRES_URL=postgresql://postgres:password@localhost:5432/denokv_test`
+The production setup uses the following environment variables:
+- `DENO_KV_POSTGRES_URL=postgresql://denokv:denokv_password@localhost:5432/denokv`
+- `DENO_KV_ACCESS_TOKEN=<generated-token>`
 
 ## Cleanup
 
-To stop and remove the PostgreSQL test container:
+To stop the PostgreSQL service (use with caution):
 ```bash
-docker-compose -f docker-compose.test.yml down
+sudo systemctl stop postgresql
+```
+
+To stop the DenoKV server:
+```bash
+./manage-services.sh stop
 ```
 EOF
 
