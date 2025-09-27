@@ -85,10 +85,27 @@ sudo systemctl reload postgresql
 
 # Create DenoKV database and user
 print_status "Setting up DenoKV database..."
-sudo -u postgres psql -c "CREATE DATABASE denokv;" 2>/dev/null || print_warning "Database 'denokv' may already exist"
-sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User 'denokv' may already exist"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;" 2>/dev/null || true
-sudo -u postgres psql -c "ALTER USER denokv CREATEDB;" 2>/dev/null || true
+
+# Try to connect without password first (peer auth)
+if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+    print_status "Using peer authentication for postgres user"
+    sudo -u postgres psql -c "CREATE DATABASE denokv;" 2>/dev/null || print_warning "Database 'denokv' may already exist"
+    sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User 'denokv' may already exist"
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;" 2>/dev/null || true
+    sudo -u postgres psql -c "ALTER USER denokv CREATEDB;" 2>/dev/null || true
+else
+    print_warning "PostgreSQL requires password authentication"
+    print_status "You may need to set a password for the postgres user first"
+    print_status "Run: sudo -u postgres psql -c \"ALTER USER postgres PASSWORD 'your_password';\""
+    print_status "Or use: sudo passwd postgres (to set system password)"
+    
+    # Try to create database with empty password
+    print_status "Attempting to create database with empty password..."
+    PGPASSWORD="" sudo -u postgres psql -c "CREATE DATABASE denokv;" 2>/dev/null || print_warning "Database 'denokv' may already exist"
+    PGPASSWORD="" sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User 'denokv' may already exist"
+    PGPASSWORD="" sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;" 2>/dev/null || true
+    PGPASSWORD="" sudo -u postgres psql -c "ALTER USER denokv CREATEDB;" 2>/dev/null || true
+fi
 
 # Test the connection
 print_status "Testing database connection..."
