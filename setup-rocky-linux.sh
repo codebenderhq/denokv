@@ -93,6 +93,16 @@ fi
 print_status "Installing additional dependencies for Rust compilation..."
 sudo dnf install -y openssl-devel pkg-config
 
+# Configure firewall for DenoKV port
+print_status "Configuring firewall for DenoKV..."
+if command -v firewall-cmd &> /dev/null; then
+    sudo firewall-cmd --permanent --add-port=4512/tcp
+    sudo firewall-cmd --reload
+    print_success "Firewall configured - port 4512 is open"
+else
+    print_warning "firewalld not found. You may need to manually open port 4512"
+fi
+
 # Clone the repository
 print_status "Cloning DenoKV repository..."
 if [ ! -d "denokv" ]; then

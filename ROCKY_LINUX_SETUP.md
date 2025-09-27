@@ -83,6 +83,16 @@ export DENO_KV_NUM_WORKERS="4"           # Default: 4
 
 The server will start on `0.0.0.0:4512` and be accessible remotely.
 
+**Important:** Make sure port 4512 is open in your firewall:
+```bash
+# Check if port is open
+sudo firewall-cmd --list-ports
+
+# If not open, add it:
+sudo firewall-cmd --permanent --add-port=4512/tcp
+sudo firewall-cmd --reload
+```
+
 ### 3. Client Authentication
 
 When connecting from a Deno application, use the access token in the Authorization header:
