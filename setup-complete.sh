@@ -259,7 +259,7 @@ Type=simple
 User=denokv
 Group=denokv
 WorkingDirectory=/var/lib/denokv
-ExecStart=/usr/local/bin/denokv serve --addr $DENOKV_ADDR
+ExecStart=/usr/local/bin/denokv serve --access-token $DENOKV_ACCESS_TOKEN --addr $DENOKV_ADDR
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -274,6 +274,7 @@ Environment=POSTGRES_PORT=5432
 Environment=POSTGRES_DB=denokv
 Environment=POSTGRES_USER=denokv
 Environment=POSTGRES_PASSWORD=denokv_password
+Environment=DENOKV_ACCESS_TOKEN=$DENOKV_ACCESS_TOKEN
 
 # Security settings
 NoNewPrivileges=true
