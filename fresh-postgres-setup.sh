@@ -21,7 +21,6 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-POSTGRES_VERSION="15"
 DENOKV_USER="denokv"
 DENOKV_PASSWORD="denokv_password"
 DENOKV_DATABASE="denokv"
@@ -108,7 +107,7 @@ if ! command_exists dnf; then
 fi
 
 print_status "Starting fresh PostgreSQL setup..."
-print_status "Configuration: PostgreSQL $POSTGRES_VERSION, User: $DENOKV_USER, Database: $DENOKV_DATABASE"
+print_status "Configuration: User: $DENOKV_USER, Database: $DENOKV_DATABASE"
 echo ""
 
 # Step 1: Stop and remove existing PostgreSQL
@@ -117,9 +116,7 @@ print_step "Step 1: Stopping and removing existing PostgreSQL..."
 # Stop all PostgreSQL-related services
 print_status "Stopping PostgreSQL services..."
 sudo systemctl stop postgresql 2>/dev/null || true
-sudo systemctl stop postgresql-${POSTGRES_VERSION} 2>/dev/null || true
 sudo systemctl disable postgresql 2>/dev/null || true
-sudo systemctl disable postgresql-${POSTGRES_VERSION} 2>/dev/null || true
 
 # Kill any remaining PostgreSQL processes
 print_status "Killing any remaining PostgreSQL processes..."
@@ -163,11 +160,11 @@ sudo dnf update -y
 
 # Install PostgreSQL packages
 print_status "Installing PostgreSQL packages..."
-sudo dnf install -y postgresql${POSTGRES_VERSION} postgresql${POSTGRES_VERSION}-server postgresql${POSTGRES_VERSION}-contrib postgresql${POSTGRES_VERSION}-devel
+sudo dnf install -y postgresql postgresql-server postgresql-contrib postgresql-devel
 
 # Install additional useful packages
 print_status "Installing additional packages..."
-sudo dnf install -y postgresql${POSTGRES_VERSION}-plpython3 postgresql${POSTGRES_VERSION}-plperl 2>/dev/null || true
+sudo dnf install -y postgresql-plpython3 postgresql-plperl 2>/dev/null || true
 
 print_success "PostgreSQL packages installed!"
 
@@ -190,7 +187,7 @@ sudo chmod 755 /var/run/postgresql
 
 # Initialize the database
 print_status "Initializing PostgreSQL database..."
-sudo -u postgres /usr/pgsql-${POSTGRES_VERSION}/bin/initdb -D "$POSTGRES_DATA_DIR" --auth-local=trust --auth-host=trust
+sudo postgresql-setup --initdb
 
 print_success "PostgreSQL database initialized!"
 
@@ -279,14 +276,22 @@ done
 # Step 6: Create DenoKV database and user
 print_status "Step 6: Creating DenoKV database and user..."
 
+# Set password for postgres user first
+print_status "Setting password for postgres user..."
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres_password';" 2>/dev/null || print_warning "Could not set postgres password"
+
 # Create denokv user
+print_status "Creating denokv user..."
 sudo -u postgres psql -c "CREATE USER denokv WITH PASSWORD 'denokv_password';" 2>/dev/null || print_warning "User denokv may already exist"
 
 # Create denokv database
+print_status "Creating denokv database..."
 sudo -u postgres psql -c "CREATE DATABASE denokv OWNER denokv;" 2>/dev/null || print_warning "Database denokv may already exist"
 
 # Grant privileges
+print_status "Granting privileges..."
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE denokv TO denokv;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON SCHEMA public TO denokv;" 2>/dev/null || true
 
 # Step 7: Test connection
 print_status "Step 7: Testing database connection..."
@@ -304,11 +309,15 @@ echo "📋 Connection Information:"
 echo "========================="
 echo "Host: localhost"
 echo "Port: 5432"
-echo "Database: denokv"
-echo "Username: denokv"
-echo "Password: denokv_password"
 echo ""
-echo "🔧 Test connection with:"
+echo "🔐 User Credentials:"
+echo "postgres user: postgres / postgres_password"
+echo "denokv user: denokv / denokv_password"
+echo ""
+echo "🗄️ Database: denokv"
+echo ""
+echo "🔧 Test connections:"
+echo "sudo -u postgres psql -d denokv"
 echo "psql -h localhost -p 5432 -U denokv -d denokv"
 echo ""
 echo "🚀 You can now run your DenoKV setup script!"
