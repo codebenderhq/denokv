@@ -172,7 +172,7 @@ POSTGRES_PASSWORD=denokv_password
 
 # DenoKV Server Configuration
 DENOKV_PORT=4512
-DENOKV_ACCESS_TOKEN=2d985dc9ed08a06b35b5a15f85925290
+DENOKV_ACCESS_TOKEN=$(openssl rand -hex 16)
 
 # Development Configuration
 RUST_LOG=info
@@ -189,7 +189,7 @@ if [ -f ~/.bashrc ]; then
     echo "export POSTGRES_USER=denokv" >> ~/.bashrc
     echo "export POSTGRES_PASSWORD=denokv_password" >> ~/.bashrc
     echo "export DENOKV_PORT=4512" >> ~/.bashrc
-    echo "export DENOKV_ACCESS_TOKEN=2d985dc9ed08a06b35b5a15f85925290" >> ~/.bashrc
+    echo "export DENOKV_ACCESS_TOKEN=\$DENOKV_ACCESS_TOKEN" >> ~/.bashrc
     echo "export RUST_LOG=info" >> ~/.bashrc
     echo "export DENO_ENV=production" >> ~/.bashrc
 fi
@@ -201,11 +201,14 @@ export POSTGRES_DB=denokv
 export POSTGRES_USER=denokv
 export POSTGRES_PASSWORD=denokv_password
 export DENOKV_PORT=4512
-export DENOKV_ACCESS_TOKEN=2d985dc9ed08a06b35b5a15f85925290
+export DENOKV_ACCESS_TOKEN=$DENOKV_ACCESS_TOKEN
 export RUST_LOG=info
 export DENO_ENV=production
 
 print_success "Environment variables configured!"
+echo ""
+echo "🔐 Generated Access Token: $DENOKV_ACCESS_TOKEN"
+echo "📝 This token has been saved to .env file and systemd service"
 
 # Step 9: Build DenoKV and setup systemd service
 print_step "Step 4: Building DenoKV and setting up systemd service..."
@@ -363,12 +366,15 @@ echo "POSTGRES_DB=denokv"
 echo "POSTGRES_USER=denokv"
 echo "POSTGRES_PASSWORD=denokv_password"
 echo "DENOKV_PORT=4512"
-echo "DENOKV_ACCESS_TOKEN=2d985dc9ed08a06b35b5a15f85925290"
+echo "DENOKV_ACCESS_TOKEN=$DENOKV_ACCESS_TOKEN"
 echo ""
 echo "🔧 Systemd Management Commands:"
 echo "==============================="
 echo "Start:   sudo systemctl start denokv.service"
 echo "Stop:    sudo systemctl stop denokv.service"
+echo ""
+echo "🔐 Access Token: $DENOKV_ACCESS_TOKEN"
+echo "📝 Use this token to connect to DenoKV from your applications"
 echo "Restart: sudo systemctl restart denokv.service"
 echo "Status:  sudo systemctl status denokv.service"
 echo "Logs:    sudo journalctl -u denokv.service -f"
