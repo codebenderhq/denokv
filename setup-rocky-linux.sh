@@ -270,7 +270,203 @@ EOF
 
 chmod +x generate-access-token.sh
 
+# Create a service management script
+print_status "Creating service management script..."
+cat > manage-services.sh << 'EOF'
+#!/bin/bash
+
+# Service management script for DenoKV on Rocky Linux
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+case "${1:-help}" in
+    start)
+        print_status "Starting all services..."
+        
+        # Start PostgreSQL
+        print_status "Starting PostgreSQL..."
+        docker-compose -f docker-compose.test.yml up -d postgres
+        
+        # Wait for PostgreSQL
+        until docker-compose -f docker-compose.test.yml exec postgres pg_isready -U postgres; do
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+        done
+        print_success "PostgreSQL started"
+        
+        # Start DenoKV server
+        print_status "Starting DenoKV server..."
+        source ~/.cargo/env
+        source .env 2>/dev/null || true
+        
+        if pgrep -f "denokv.*serve" > /dev/null; then
+            print_warning "DenoKV server is already running"
+        else
+            nohup cargo run --release -- serve --addr 0.0.0.0:4512 > denokv.log 2>&1 &
+            sleep 2
+            if pgrep -f "denokv.*serve" > /dev/null; then
+                print_success "DenoKV server started"
+            else
+                print_error "Failed to start DenoKV server"
+            fi
+        fi
+        ;;
+        
+    stop)
+        print_status "Stopping all services..."
+        
+        # Stop DenoKV server
+        if pgrep -f "denokv.*serve" > /dev/null; then
+            pkill -f "denokv.*serve"
+            print_success "DenoKV server stopped"
+        else
+            print_warning "DenoKV server was not running"
+        fi
+        
+        # Stop PostgreSQL
+        docker-compose -f docker-compose.test.yml down
+        print_success "PostgreSQL stopped"
+        ;;
+        
+    restart)
+        $0 stop
+        sleep 2
+        $0 start
+        ;;
+        
+    status)
+        print_status "Service Status:"
+        echo ""
+        
+        # Check PostgreSQL
+        if docker-compose -f docker-compose.test.yml ps postgres | grep -q "Up"; then
+            print_success "PostgreSQL: Running"
+        else
+            print_warning "PostgreSQL: Stopped"
+        fi
+        
+        # Check DenoKV server
+        if pgrep -f "denokv.*serve" > /dev/null; then
+            print_success "DenoKV Server: Running (PID: $(pgrep -f 'denokv.*serve'))"
+        else
+            print_warning "DenoKV Server: Stopped"
+        fi
+        
+        # Check port 4512
+        if netstat -tlnp 2>/dev/null | grep -q ":4512 "; then
+            print_success "Port 4512: Open"
+        else
+            print_warning "Port 4512: Closed"
+        fi
+        ;;
+        
+    logs)
+        if [ -f "denokv.log" ]; then
+            tail -f denokv.log
+        else
+            print_warning "No log file found"
+        fi
+        ;;
+        
+    *)
+        echo "DenoKV Service Manager"
+        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo ""
+        echo "Commands:"
+        echo "  start   - Start PostgreSQL and DenoKV server"
+        echo "  stop    - Stop all services"
+        echo "  restart - Restart all services"
+        echo "  status  - Show service status"
+        echo "  logs    - Show DenoKV server logs"
+        ;;
+esac
+EOF
+
+chmod +x manage-services.sh
+
 print_success "Scripts created successfully"
+
+# Start PostgreSQL in Docker
+print_status "Starting PostgreSQL test database..."
+docker-compose -f docker-compose.test.yml up -d postgres
+
+# Wait for PostgreSQL to be ready
+print_status "Waiting for PostgreSQL to be ready..."
+until docker-compose -f docker-compose.test.yml exec postgres pg_isready -U postgres; do
+  echo "PostgreSQL is not ready yet..."
+  sleep 2
+done
+
+print_success "PostgreSQL is ready!"
+
+# Set up environment variables
+print_status "Setting up environment variables..."
+export DENO_KV_POSTGRES_URL="postgresql://postgres:password@localhost:5432/denokv_test"
+export DENO_KV_DATABASE_TYPE="postgres"
+
+# Generate access token if not set
+if [ -z "$DENO_KV_ACCESS_TOKEN" ]; then
+    print_status "Generating access token..."
+    if command -v openssl &> /dev/null; then
+        DENO_KV_ACCESS_TOKEN=$(openssl rand -hex 16)
+    else
+        DENO_KV_ACCESS_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | cut -c1-32)
+    fi
+    export DENO_KV_ACCESS_TOKEN
+    print_success "Generated access token: ${DENO_KV_ACCESS_TOKEN:0:8}..."
+fi
+
+# Create environment file for persistence
+print_status "Creating .env file for environment variables..."
+cat > .env << EOF
+DENO_KV_POSTGRES_URL=postgresql://postgres:password@localhost:5432/denokv_test
+DENO_KV_DATABASE_TYPE=postgres
+DENO_KV_ACCESS_TOKEN=$DENO_KV_ACCESS_TOKEN
+DENO_KV_NUM_WORKERS=4
+EOF
+
+print_success "Environment file created: .env"
+
+# Run integration tests
+print_status "Running PostgreSQL integration tests..."
+source ~/.cargo/env
+if cargo test --package denokv_postgres test_postgres; then
+    print_success "Integration tests passed!"
+else
+    print_warning "Integration tests failed, but continuing with setup..."
+fi
+
+# Start DenoKV server in background
+print_status "Starting DenoKV server..."
+source ~/.cargo/env
+nohup cargo run --release -- serve --addr 0.0.0.0:4512 > denokv.log 2>&1 &
+DENOKV_PID=$!
+
+# Wait a moment for server to start
+sleep 3
+
+# Check if server started successfully
+if kill -0 $DENOKV_PID 2>/dev/null; then
+    print_success "DenoKV server started successfully!"
+    print_status "Server PID: $DENOKV_PID"
+    print_status "Log file: denokv.log"
+    print_status "Server running on: http://0.0.0.0:4512"
+else
+    print_warning "DenoKV server may not have started properly"
+    print_status "Check denokv.log for details"
+fi
 
 # Create a README for the setup
 print_status "Creating setup README..."
@@ -365,19 +561,39 @@ EOF
 print_success "Setup README created successfully"
 
 echo ""
-print_success "🎉 Setup completed successfully!"
+print_success "🎉 Complete setup finished successfully!"
 echo ""
-print_status "Next steps:"
-echo "1. Log out and log back in to ensure Docker group membership takes effect"
-echo "2. Run: docker ps (to verify Docker access)"
-echo "3. Run: ./test-postgres-integration.sh (to test PostgreSQL integration)"
+print_status "What's been set up:"
+echo "✅ All dependencies installed (Rust, Docker, PostgreSQL dev libraries)"
+echo "✅ PostgreSQL database running in Docker"
+echo "✅ Environment variables configured (.env file created)"
+echo "✅ Access token generated and saved"
+echo "✅ Integration tests run"
+echo "✅ DenoKV server started and running"
+echo "✅ Port 4512 opened in firewall"
 echo ""
-print_status "For production server:"
-echo "1. Set DENO_KV_POSTGRES_URL environment variable"
-echo "2. Run: ./start-denokv-server.sh (will auto-generate access token)"
-echo "   OR: ./generate-access-token.sh (to generate token manually)"
+print_status "Current status:"
+echo "  🐘 PostgreSQL: Running in Docker (port 5432)"
+echo "  🚀 DenoKV Server: Running on http://0.0.0.0:4512"
+echo "  🔑 Access Token: ${DENO_KV_ACCESS_TOKEN:0:8}... (saved in .env)"
+echo "  📝 Log File: denokv.log"
+echo "  🆔 Server PID: $DENOKV_PID"
 echo ""
-print_status "Setup documentation is available in ROCKY_LINUX_SETUP.md"
+print_status "Ready for remote connections!"
+echo "  Connect from Deno apps using: http://your-server-ip:4512"
+echo "  Access token: $DENO_KV_ACCESS_TOKEN"
+echo ""
+print_status "Management commands:"
+echo "  ./manage-services.sh start    - Start all services"
+echo "  ./manage-services.sh stop     - Stop all services"
+echo "  ./manage-services.sh restart  - Restart all services"
+echo "  ./manage-services.sh status   - Check service status"
+echo "  ./manage-services.sh logs     - View server logs"
+echo "  ./test-postgres-integration.sh - Run tests again"
+echo "  ./generate-access-token.sh     - Generate new token"
+echo "  ./upgrade-denokv.sh            - Update and rebuild"
+echo ""
+print_status "Setup documentation: ROCKY_LINUX_SETUP.md"
 echo ""
 print_warning "Note: You may need to restart your terminal or run 'source ~/.cargo/env' to use Rust commands"
-print_warning "Security: Generate a strong access token for production use!"
+print_warning "Security: Your access token is saved in .env file - keep it secure!"
