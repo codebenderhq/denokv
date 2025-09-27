@@ -89,7 +89,20 @@ print_success "Environment file created: .env"
 
 # Start DenoKV server
 print_status "Starting DenoKV server..."
-source ~/.cargo/env
+
+# Source Rust environment for the current user
+if [ -f "$HOME/.cargo/env" ]; then
+    source "$HOME/.cargo/env"
+elif [ -f "/home/rawkakani/.cargo/env" ]; then
+    source "/home/rawkakani/.cargo/env"
+else
+    print_warning "Rust environment not found, trying to find cargo..."
+    if ! command -v cargo &> /dev/null; then
+        print_error "Cargo not found. Please install Rust first."
+        exit 1
+    fi
+fi
+
 nohup cargo run --release -- serve --addr 0.0.0.0:4512 > denokv.log 2>&1 &
 DENOKV_PID=$!
 
