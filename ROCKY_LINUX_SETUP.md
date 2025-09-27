@@ -37,6 +37,48 @@ After setup, you can run the PostgreSQL integration tests:
 ./test-postgres-integration.sh
 ```
 
+## Running the Production Server
+
+To start the DenoKV server for remote access, you need to set up authentication:
+
+### 1. Set Required Environment Variables
+
+```bash
+# Required: Access token for authentication (minimum 12 characters)
+export DENO_KV_ACCESS_TOKEN="your-secure-access-token-here"
+
+# Required: PostgreSQL connection URL
+export DENO_KV_POSTGRES_URL="postgresql://user:password@host:port/database"
+
+# Optional: Additional configuration
+export DENO_KV_DATABASE_TYPE="postgres"  # Default: postgres
+export DENO_KV_NUM_WORKERS="4"           # Default: 4
+```
+
+### 2. Start the Server
+
+```bash
+./start-denokv-server.sh
+```
+
+The server will start on `0.0.0.0:4512` and be accessible remotely.
+
+### 3. Client Authentication
+
+When connecting from a Deno application, use the access token in the Authorization header:
+
+```typescript
+const kv = await Deno.openKv("http://your-server:4512", {
+  accessToken: "your-secure-access-token-here"
+});
+```
+
+**Important Security Notes:**
+- The access token must be at least 12 characters long
+- Use a strong, randomly generated token for production
+- Keep the access token secure and don't commit it to version control
+- The server validates tokens using constant-time comparison for security
+
 ## Manual Steps After Setup
 
 1. **Log out and log back in** - This ensures Docker group membership takes effect

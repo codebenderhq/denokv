@@ -135,8 +135,9 @@ done
 
 echo "PostgreSQL is ready!"
 
-# Set environment variable for tests
+# Set environment variables for tests
 export POSTGRES_URL="postgresql://postgres:password@localhost:5432/denokv_test"
+export DENO_KV_ACCESS_TOKEN="1234abcd5678efgh"  # Test access token (minimum 12 chars)
 
 # Run the tests
 echo "Running PostgreSQL tests..."
@@ -149,6 +150,50 @@ docker-compose -f docker-compose.test.yml down
 
 echo "✅ Tests completed successfully!"
 EOF
+
+# Create a production server startup script
+print_status "Creating production server script..."
+cat > start-denokv-server.sh << 'EOF'
+#!/bin/bash
+
+# Production DenoKV server startup script for Rocky Linux
+
+set -e
+
+echo "🚀 Starting DenoKV server..."
+
+# Check if access token is provided
+if [ -z "$DENO_KV_ACCESS_TOKEN" ]; then
+    echo "❌ Error: DENO_KV_ACCESS_TOKEN environment variable is required"
+    echo "   Set it with: export DENO_KV_ACCESS_TOKEN='your-secure-token-here'"
+    echo "   Token must be at least 12 characters long"
+    exit 1
+fi
+
+# Check if PostgreSQL URL is provided
+if [ -z "$DENO_KV_POSTGRES_URL" ]; then
+    echo "❌ Error: DENO_KV_POSTGRES_URL environment variable is required"
+    echo "   Set it with: export DENO_KV_POSTGRES_URL='postgresql://user:pass@host:port/db'"
+    exit 1
+fi
+
+# Set default values
+export DENO_KV_DATABASE_TYPE=${DENO_KV_DATABASE_TYPE:-"postgres"}
+export DENO_KV_NUM_WORKERS=${DENO_KV_NUM_WORKERS:-"4"}
+
+echo "Configuration:"
+echo "  Database Type: $DENO_KV_DATABASE_TYPE"
+echo "  PostgreSQL URL: $DENO_KV_POSTGRES_URL"
+echo "  Access Token: ${DENO_KV_ACCESS_TOKEN:0:8}..." # Show only first 8 chars
+echo "  Workers: $DENO_KV_NUM_WORKERS"
+echo ""
+
+# Start the server
+source ~/.cargo/env
+cargo run --release -- serve --addr 0.0.0.0:4512
+EOF
+
+chmod +x start-denokv-server.sh
 
 chmod +x test-postgres-integration.sh
 
@@ -254,6 +299,12 @@ echo "1. Log out and log back in to ensure Docker group membership takes effect"
 echo "2. Run: docker ps (to verify Docker access)"
 echo "3. Run: ./test-postgres-integration.sh (to test PostgreSQL integration)"
 echo ""
+print_status "For production server:"
+echo "1. Set DENO_KV_ACCESS_TOKEN environment variable (minimum 12 characters)"
+echo "2. Set DENO_KV_POSTGRES_URL environment variable"
+echo "3. Run: ./start-denokv-server.sh"
+echo ""
 print_status "Setup documentation is available in ROCKY_LINUX_SETUP.md"
 echo ""
 print_warning "Note: You may need to restart your terminal or run 'source ~/.cargo/env' to use Rust commands"
+print_warning "Security: Generate a strong access token for production use!"
