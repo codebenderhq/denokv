@@ -234,9 +234,10 @@ print_success "DenoKV binary ready"
 # Create denokv user if it doesn't exist
 if ! id "denokv" &>/dev/null; then
     print_status "Creating denokv user..."
-    $SUDO_CMD useradd -r -s /bin/false -d /home/denokv denokv
-    $SUDO_CMD mkdir -p /home/denokv
-    $SUDO_CMD chown denokv:denokv /home/denokv
+    $SUDO_CMD useradd -r -s /bin/false -d /var/lib/denokv denokv
+    $SUDO_CMD mkdir -p /var/lib/denokv
+    $SUDO_CMD chown denokv:denokv /var/lib/denokv
+    $SUDO_CMD chmod 755 /var/lib/denokv
 fi
 
 # Install DenoKV binary to system location
@@ -257,7 +258,7 @@ Requires=postgresql-16.service
 Type=simple
 User=denokv
 Group=denokv
-WorkingDirectory=/home/denokv
+WorkingDirectory=/var/lib/denokv
 ExecStart=/usr/local/bin/denokv serve --addr $DENOKV_ADDR
 Restart=always
 RestartSec=5
@@ -279,10 +280,17 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/var/lib/denokv
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Ensure working directory exists and has proper permissions
+print_status "Setting up DenoKV working directory..."
+$SUDO_CMD mkdir -p /var/lib/denokv
+$SUDO_CMD chown denokv:denokv /var/lib/denokv
+$SUDO_CMD chmod 755 /var/lib/denokv
 
 # Reload systemd and enable service
 print_status "Enabling DenoKV systemd service..."
