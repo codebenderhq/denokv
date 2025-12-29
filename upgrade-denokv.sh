@@ -209,3 +209,11 @@ echo ""
     11 │
     12 │# Verify
     13 │sudo systemctl status denokv.service
+
+
+      3 │cargo build --release
+     4 │sudo systemctl stop denokv.service
+     5 │sudo cp target/release/denokv /usr/local/bin/denokv
+     6 │sudo chmod +x /usr/local/bin/denokv
+     7 │sudo systemctl start denokv.service
+     8 │sudo systemctl status denokv.service
