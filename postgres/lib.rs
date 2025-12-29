@@ -53,10 +53,9 @@ impl Postgres {
         // Create deadpool manager
         let manager = Manager::new(pg_config, NoTls);
         
-        // Create the connection pool with better recovery settings
+        // Create the connection pool
         let pool = Pool::builder(manager)
             .max_size(config.max_connections)
-            .recycle_timeout(Some(std::time::Duration::from_secs(300))) // Recycle connections after 5 minutes
             .build()
             .map_err(|e| PostgresError::ConnectionFailed(format!("Failed to create connection pool: {}", e)))?;
 
