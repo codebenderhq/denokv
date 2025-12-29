@@ -585,8 +585,6 @@ pub enum SnapshotReadError {
 #[derive(Debug, Error, JsError)]
 pub enum AtomicWriteError {
   #[class(generic)]
-  #[error("Enqueue operations are not supported in KV Connect")]
-  EnqueueOperationsUnsupported,
   #[class(inherit)]
   #[error(transparent)]
   CallData(#[from] CallDataError),
@@ -706,11 +704,7 @@ impl<P: RemotePermissions, T: RemoteTransport> Database for Remote<P, T> {
     &self,
     write: AtomicWrite,
   ) -> Result<Option<CommitResult>, JsErrorBox> {
-    if !write.enqueues.is_empty() {
-      return Err(JsErrorBox::from_err(
-        AtomicWriteError::EnqueueOperationsUnsupported,
-      ));
-    }
+    // Enqueue operations are now supported
 
     let mut checks = Vec::new();
     for check in write.checks {
@@ -801,12 +795,21 @@ impl<P: RemotePermissions, T: RemoteTransport> Database for Remote<P, T> {
       }
     }
 
-    assert!(write.enqueues.is_empty());
+    // Convert enqueues to protobuf format
+    let mut enqueues = Vec::new();
+    for enqueue in write.enqueues {
+      enqueues.push(pb::Enqueue {
+        payload: enqueue.payload,
+        deadline_ms: enqueue.deadline.timestamp_millis(),
+        keys_if_undelivered: enqueue.keys_if_undelivered,
+        backoff_schedule: enqueue.backoff_schedule.unwrap_or_default(),
+      });
+    }
 
     let req = pb::AtomicWrite {
       checks,
       mutations,
-      enqueues: Vec::new(),
+      enqueues,
     };
 
     let (res, _): (pb::AtomicWriteOutput, _) = self

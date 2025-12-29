@@ -43,6 +43,28 @@ impl From<tokio_postgres::Error> for PostgresError {
     }
 }
 
+impl PostgresError {
+    /// Check if this error is transient and should be retried
+    pub fn is_transient(&self) -> bool {
+        match self {
+            PostgresError::ConnectionFailed(_) => true,
+            PostgresError::DatabaseError(msg) => {
+                let msg_lower = msg.to_lowercase();
+                // Check for connection-related error messages
+                msg_lower.contains("connection closed") ||
+                msg_lower.contains("connection terminated") ||
+                msg_lower.contains("connection reset") ||
+                msg_lower.contains("broken pipe") ||
+                msg_lower.contains("server closed the connection") ||
+                msg_lower.contains("terminating connection because of crash") ||
+                msg_lower.contains("could not create relation-cache")
+            }
+            PostgresError::PoolError(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl From<deadpool_postgres::PoolError> for PostgresError {
     fn from(err: deadpool_postgres::PoolError) -> Self {
         PostgresError::PoolError(err.to_string())

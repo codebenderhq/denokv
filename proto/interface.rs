@@ -205,7 +205,7 @@ pub struct KvEntry {
 ///
 /// - **Bytes**: an arbitrary byte array.
 /// - **U64**: a 64-bit unsigned integer.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum KvValue {
   V8(Vec<u8>),
   Bytes(Vec<u8>),
@@ -230,6 +230,7 @@ pub enum KvValue {
 /// The mutations are performed in the order that they are specified in the
 /// `mutations` field. The order of checks is not specified, and is also not
 /// important because this ordering is un-observable.
+#[derive(Clone)]
 pub struct AtomicWrite {
   pub checks: Vec<Check>,
   pub mutations: Vec<Mutation>,
@@ -239,6 +240,7 @@ pub struct AtomicWrite {
 /// A request to perform a check on a key in the database. The check is not
 /// performed on the value of the key, but rather on the versionstamp of the
 /// key.
+#[derive(Clone)]
 pub struct Check {
   pub key: Vec<u8>,
   pub versionstamp: Option<Versionstamp>,
@@ -249,6 +251,7 @@ pub struct Check {
 ///
 /// The type of mutation is specified by the `kind` field. The action performed
 /// by each mutation kind is specified in the docs for [MutationKind].
+#[derive(Clone)]
 pub struct Mutation {
   pub key: Vec<u8>,
   pub kind: MutationKind,
@@ -268,6 +271,7 @@ pub struct Mutation {
 ///
 /// If all retry attempts failed, the message is written to the KV under all
 /// keys specified in `keys_if_undelivered`.
+#[derive(Clone)]
 pub struct Enqueue {
   pub payload: Vec<u8>,
   pub deadline: DateTime<Utc>,
@@ -316,7 +320,7 @@ pub struct Enqueue {
 /// the database must match the type of the value specified in the mutation. If
 /// the key does not exist in the database, then the value specified in the
 /// mutation is used as the new value of the key.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum MutationKind {
   Set(KvValue),
   Delete,

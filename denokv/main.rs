@@ -546,7 +546,11 @@ async fn atomic_write_endpoint(
 ) -> Result<Protobuf<pb::AtomicWriteOutput>, ApiError> {
   let atomic_write: AtomicWrite = atomic_write.try_into()?;
 
-  let res = state.database.atomic_write(atomic_write).await?;
+  let res = state.database.atomic_write(atomic_write).await
+    .map_err(|e| {
+      log::error!("atomic_write failed: {}", e);
+      e
+    })?;
 
   Ok(Protobuf(res.into()))
 }
@@ -753,6 +757,7 @@ impl From<ConvertError> for ApiError {
 
 impl From<deno_error::JsErrorBox> for ApiError {
   fn from(err: deno_error::JsErrorBox) -> ApiError {
+    log::error!("Database error: {}", err);
     ApiError::InternalServerError
   }
 }
