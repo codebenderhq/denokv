@@ -1,0 +1,69 @@
+#!/bin/bash
+# Script to expand 512GB disk on Azure VM
+# Run this on the database server: 102.37.137.29
+
+set -e  # Exit on error
+
+echo "=== Expanding 512GB Disk ==="
+echo ""
+
+# Step 1: Fix GPT table
+echo "Step 1: Fixing GPT partition table..."
+echo "Note: This will prompt you to write changes. Type 'w' then 'y' when prompted."
+echo "Press Enter to continue..."
+read
+
+sudo gdisk /dev/nvme0n1 <<EOF
+w
+y
+EOF
+
+echo ""
+echo "Step 1 complete: GPT table fixed"
+echo ""
+
+# Step 2: Install growpart if needed
+echo "Step 2: Installing growpart if needed..."
+if ! command -v growpart &> /dev/null; then
+    sudo dnf install -y cloud-utils-growpart || sudo yum install -y cloud-utils-growpart
+    echo "growpart installed"
+else
+    echo "growpart already installed"
+fi
+echo ""
+
+# Step 3: Extend partition 4
+echo "Step 3: Extending partition 4 to use full disk..."
+sudo growpart /dev/nvme0n1 4
+echo "Partition extended"
+echo ""
+
+# Step 4: Resize physical volume
+echo "Step 4: Resizing LVM physical volume..."
+sudo pvresize /dev/nvme0n1p4
+echo "Physical volume resized"
+echo ""
+
+# Step 5: Extend logical volume
+echo "Step 5: Extending logical volume to use all available space..."
+sudo lvextend -l +100%FREE /dev/mapper/rocky-lvroot
+echo "Logical volume extended"
+echo ""
+
+# Step 6: Resize filesystem
+echo "Step 6: Resizing filesystem..."
+sudo xfs_growfs /
+echo "Filesystem resized"
+echo ""
+
+# Step 7: Verify
+echo "Step 7: Verifying disk space..."
+echo ""
+df -h
+echo ""
+echo "=== Disk expansion complete! ==="
+echo ""
+echo "Current disk status:"
+sudo pvs
+sudo vgs
+sudo lvs

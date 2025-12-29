@@ -56,7 +56,6 @@ impl Postgres {
         // Create the connection pool with better recovery settings
         let pool = Pool::builder(manager)
             .max_size(config.max_connections)
-            .wait_timeout(Some(std::time::Duration::from_secs(config.connection_timeout)))
             .recycle_timeout(Some(std::time::Duration::from_secs(300))) // Recycle connections after 5 minutes
             .build()
             .map_err(|e| PostgresError::ConnectionFailed(format!("Failed to create connection pool: {}", e)))?;

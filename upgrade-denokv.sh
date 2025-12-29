@@ -143,20 +143,69 @@ echo "  ✅ Project rebuilt successfully"
 echo "  ✅ Script permissions updated"
 echo ""
 
-# Check if server is running
-if pgrep -f "denokv.*serve" > /dev/null; then
-    print_warning "DenoKV server appears to be running"
-    print_status "You may want to restart it to use the new version:"
-    echo "  pkill -f 'denokv.*serve'  # Stop current server"
-    echo "  ./start-denokv-server.sh   # Start with new version"
+# Install the new binary
+print_status "Installing new DenoKV binary..."
+if [ -f "target/release/denokv" ]; then
+    # Stop service first so we can overwrite the binary
+    if systemctl list-unit-files | grep -q "denokv.service"; then
+        if sudo systemctl is-active --quiet denokv.service; then
+            print_status "Stopping DenoKV service to update binary..."
+            sudo systemctl stop denokv.service
+        fi
+    fi
+    
+    # Copy the binary
+    sudo cp target/release/denokv /usr/local/bin/denokv
+    sudo chmod +x /usr/local/bin/denokv
+    sudo chown root:root /usr/local/bin/denokv
+    print_success "Binary installed to /usr/local/bin/denokv"
 else
-    print_status "Ready to start server with: ./start-denokv-server.sh"
+    print_error "Binary not found at target/release/denokv"
+    exit 1
+fi
+
+# Check if systemd service exists and start it
+if systemctl list-unit-files | grep -q "denokv.service"; then
+    print_status "Starting DenoKV systemd service with new binary..."
+    if sudo systemctl start denokv.service; then
+        sleep 2
+        if sudo systemctl is-active --quiet denokv.service; then
+            print_success "DenoKV service restarted successfully!"
+        else
+            print_error "Service restarted but is not active. Check status:"
+            echo "  sudo systemctl status denokv.service"
+        fi
+    else
+        print_error "Failed to restart service"
+        exit 1
+    fi
+else
+    print_warning "Systemd service not found. Server may be running manually."
+    if pgrep -f "denokv.*serve" > /dev/null; then
+        print_status "DenoKV process found. You may want to restart it manually:"
+        echo "  pkill -f 'denokv.*serve'  # Stop current server"
+        echo "  ./start-denokv-server.sh   # Start with new version"
+    fi
 fi
 
 echo ""
 print_status "Available commands:"
-echo "  ./start-denokv-server.sh      - Start production server"
-echo "  ./test-postgres-integration.sh - Run integration tests"
-echo "  ./generate-access-token.sh     - Generate new access token"
-echo "  ./upgrade-denokv.sh            - Run this upgrade script again"
+echo "  sudo systemctl status denokv.service  - Check service status"
+echo "  sudo journalctl -u denokv.service -f  - View service logs"
+echo "  ./upgrade-denokv.sh                   - Run this upgrade script again"
 echo ""
+
+
+     1 │# Stop the service first
+     2 │sudo systemctl stop denokv.service
+     3 │
+     4 │# Then copy the binary
+     5 │sudo cp target/release/denokv /usr/local/bin/denokv
+     6 │sudo chmod +x /usr/local/bin/denokv
+     7 │sudo chown root:root /usr/local/bin/denokv
+     8 │
+     9 │# Start the service
+    10 │sudo systemctl start denokv.service
+    11 │
+    12 │# Verify
+    13 │sudo systemctl status denokv.service
