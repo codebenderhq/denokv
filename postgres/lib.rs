@@ -9,6 +9,7 @@ mod notifier;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -66,11 +67,52 @@ impl Postgres {
         // Create notifier
         let notifier = PostgresNotifier::new();
 
-        Ok(Postgres {
+        let pg = Postgres {
             pool,
             notifier,
             backend,
-        })
+        };
+
+        // Spawn background tasks matching SQLite backend behaviour:
+        //  1. Periodic expired-key collection (every 60 s)
+        //  2. Periodic queue cleanup — requeue messages stuck in queue_running
+        //     past their deadline (every 30 s)
+        {
+            let backend = pg.backend.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    match backend.collect_expired().await {
+                        Ok(n) if n > 0 => {
+                            eprintln!("[denokv/postgres] collected {n} expired key(s)");
+                        }
+                        Err(e) => {
+                            eprintln!("[denokv/postgres] collect_expired error: {e}");
+                        }
+                        _ => {} // nothing to collect
+                    }
+                }
+            });
+        }
+        {
+            let backend = pg.backend.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    match backend.queue_cleanup().await {
+                        Ok(n) if n > 0 => {
+                            eprintln!("[denokv/postgres] requeued {n} dead queue message(s)");
+                        }
+                        Err(e) => {
+                            eprintln!("[denokv/postgres] queue_cleanup error: {e}");
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+
+        Ok(pg)
     }
 
     /// Get a connection from the pool

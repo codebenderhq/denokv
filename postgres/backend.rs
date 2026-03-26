@@ -105,17 +105,19 @@ impl PostgresBackend {
         Ok(())
     }
 
-    /// Read a range of keys
+    /// Read a range of keys, excluding expired entries.
     pub async fn read_range(
         &self,
         conn: &Client,
         request: &ReadRange,
     ) -> PostgresResult<Vec<KvEntry>> {
+        let now_ms = Utc::now().timestamp_millis();
         let query = if request.reverse {
             r#"
             SELECT key, value, value_encoding, versionstamp
             FROM kv_store
             WHERE key >= $1 AND key < $2
+              AND (expires_at IS NULL OR expires_at > $4)
             ORDER BY key DESC
             LIMIT $3
             "#
@@ -124,6 +126,7 @@ impl PostgresBackend {
             SELECT key, value, value_encoding, versionstamp
             FROM kv_store
             WHERE key >= $1 AND key < $2
+              AND (expires_at IS NULL OR expires_at > $4)
             ORDER BY key ASC
             LIMIT $3
             "#
@@ -133,6 +136,7 @@ impl PostgresBackend {
             &request.start,
             &request.end,
             &(request.limit.get() as i64),
+            &now_ms,
         ]).await?;
 
         let mut entries = Vec::new();
@@ -174,15 +178,16 @@ impl PostgresBackend {
     ) -> PostgresResult<Option<CommitResult>> {
         let tx = conn.transaction().await?;
 
-        // Perform checks
+        // Perform checks — treat expired keys as non-existent
+        let now_ms = Utc::now().timestamp_millis();
         for check in &write.checks {
             let row = tx.query_opt(
-                "SELECT versionstamp FROM kv_store WHERE key = $1",
-                &[&check.key],
+                "SELECT versionstamp FROM kv_store WHERE key = $1 AND (expires_at IS NULL OR expires_at > $2)",
+                &[&check.key, &now_ms],
             ).await?;
 
             let current_versionstamp = row.map(|r| r.get::<_, Vec<u8>>("versionstamp"));
-            
+
             if let Some(expected) = &check.versionstamp {
                 if current_versionstamp.as_ref().map(|v| v.as_slice()) != Some(expected.as_slice()) {
                     return Ok(None); // Check failed
@@ -501,6 +506,76 @@ impl PostgresBackend {
         } else {
             Ok(None)
         }
+    }
+
+    /// Delete all expired keys. Returns the number of rows removed.
+    pub async fn collect_expired(&self) -> PostgresResult<u64> {
+        let conn = self.pool.get().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        let deleted = conn.execute(
+            "DELETE FROM kv_store WHERE expires_at IS NOT NULL AND expires_at <= $1",
+            &[&now_ms],
+        ).await?;
+        Ok(deleted)
+    }
+
+    /// Requeue messages stuck in queue_running past their deadline.
+    /// This recovers from dead workers that never finished their messages.
+    /// Returns the number of messages requeued.
+    pub async fn queue_cleanup(&self) -> PostgresResult<u64> {
+        let mut conn = self.pool.get().await?;
+        let tx = conn.transaction().await?;
+        let now_ms = Utc::now().timestamp_millis();
+
+        // Find running messages past their deadline (dead worker recovery)
+        let rows = tx.query(
+            "SELECT message_id FROM queue_running WHERE deadline <= $1 LIMIT 100",
+            &[&now_ms],
+        ).await?;
+
+        let mut requeued = 0u64;
+        for row in &rows {
+            let message_id: String = row.get("message_id");
+
+            // Fetch the original message to get backoff info
+            let msg_row = tx.query_opt(
+                r#"SELECT backoff_schedule, retry_count
+                   FROM queue_messages WHERE id = $1"#,
+                &[&message_id],
+            ).await?;
+
+            // Remove from running table
+            tx.execute("DELETE FROM queue_running WHERE message_id = $1", &[&message_id]).await?;
+
+            if let Some(msg) = msg_row {
+                let backoff_json: Option<String> = msg.get("backoff_schedule");
+                let retry_count: i32 = msg.get("retry_count");
+                let backoff_schedule: Vec<u64> = backoff_json
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default();
+
+                if !backoff_schedule.is_empty() {
+                    let delay_ms = backoff_schedule[0] as i64;
+                    let new_deadline = now_ms + delay_ms;
+                    let remaining = serde_json::to_string(&backoff_schedule[1..])
+                        .unwrap_or_else(|_| "[]".to_string());
+
+                    tx.execute(
+                        r#"UPDATE queue_messages
+                           SET deadline = $1, backoff_schedule = $2, retry_count = $3
+                           WHERE id = $4"#,
+                        &[&new_deadline, &remaining, &(retry_count + 1), &message_id],
+                    ).await?;
+                    requeued += 1;
+                } else {
+                    // No retries left — delete the message
+                    tx.execute("DELETE FROM queue_messages WHERE id = $1", &[&message_id]).await?;
+                }
+            }
+        }
+
+        tx.commit().await?;
+        Ok(requeued)
     }
 
     /// Encode a value for storage
