@@ -111,7 +111,7 @@ impl PostgresBackend {
         conn: &Client,
         request: &ReadRange,
     ) -> PostgresResult<Vec<KvEntry>> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = crate::time::utc_now().timestamp_millis();
         let query = if request.reverse {
             r#"
             SELECT key, value, value_encoding, versionstamp
@@ -179,7 +179,7 @@ impl PostgresBackend {
         let tx = conn.transaction().await?;
 
         // Perform checks — treat expired keys as non-existent
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = crate::time::utc_now().timestamp_millis();
         for check in &write.checks {
             let row = tx.query_opt(
                 "SELECT versionstamp FROM kv_store WHERE key = $1 AND (expires_at IS NULL OR expires_at > $2)",
@@ -511,7 +511,7 @@ impl PostgresBackend {
     /// Delete all expired keys. Returns the number of rows removed.
     pub async fn collect_expired(&self) -> PostgresResult<u64> {
         let conn = self.pool.get().await?;
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = crate::time::utc_now().timestamp_millis();
         let deleted = conn.execute(
             "DELETE FROM kv_store WHERE expires_at IS NOT NULL AND expires_at <= $1",
             &[&now_ms],
@@ -525,7 +525,7 @@ impl PostgresBackend {
     pub async fn queue_cleanup(&self) -> PostgresResult<u64> {
         let mut conn = self.pool.get().await?;
         let tx = conn.transaction().await?;
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = crate::time::utc_now().timestamp_millis();
 
         // Find running messages past their deadline (dead worker recovery)
         let rows = tx.query(

@@ -55,7 +55,7 @@ impl PostgresMessageHandle {
                 if !backoff_schedule.is_empty() {
                     // Requeue with next backoff delay
                     let delay_ms = backoff_schedule[0] as i64;
-                    let new_deadline = Utc::now().timestamp_millis() + delay_ms;
+                    let new_deadline = crate::time::utc_now().timestamp_millis() + delay_ms;
                     let remaining_backoff = serde_json::to_string(&backoff_schedule[1..])
                         .unwrap_or_else(|_| "[]".to_string());
 

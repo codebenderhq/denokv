@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod message_handle;
 mod notifier;
+mod time;
 
 use std::collections::HashMap;
 use std::pin::Pin;
