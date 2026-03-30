@@ -176,7 +176,32 @@ impl PostgresBackend {
         conn: &mut Client,
         write: AtomicWrite,
     ) -> PostgresResult<Option<CommitResult>> {
-        let tx = conn.transaction().await?;
+        match self.atomic_write_inner(conn, write).await {
+            Ok(result) => Ok(result),
+            Err(PostgresError::DatabaseError(msg)) => {
+                // PostgreSQL serialization failure (40001) means a concurrent
+                // transaction conflicted — treat as an atomic check failure.
+                // The error string from tokio_postgres contains the SQLSTATE.
+                if msg.contains("could not serialize access") || msg.contains("40001") {
+                    Ok(None)
+                } else {
+                    Err(PostgresError::DatabaseError(msg))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn atomic_write_inner(
+        &self,
+        conn: &mut Client,
+        write: AtomicWrite,
+    ) -> PostgresResult<Option<CommitResult>> {
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::Serializable)
+            .start()
+            .await?;
 
         // Perform checks — treat expired keys as non-existent
         let now_ms = crate::time::utc_now().timestamp_millis();
@@ -241,7 +266,7 @@ impl PostgresBackend {
                     // This is a special case - we need to generate a new key with the versionstamp
                     let mut new_key = mutation.key.clone();
                     new_key.extend_from_slice(&versionstamp);
-                    
+
                     let (value_bytes, encoding) = self.encode_value(value);
                     let expires_at = mutation.expire_at;
 
@@ -271,7 +296,6 @@ impl PostgresBackend {
         }
 
         tx.commit().await?;
-
         Ok(Some(CommitResult { versionstamp }))
     }
 

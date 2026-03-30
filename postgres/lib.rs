@@ -149,11 +149,23 @@ impl Database for Postgres {
         &self,
         write: AtomicWrite,
     ) -> Result<Option<CommitResult>, JsErrorBox> {
+        // Collect mutated keys before the write consumes them
+        let mutated_keys: Vec<Vec<u8>> = write.mutations.iter()
+            .map(|m| m.key.clone())
+            .collect();
+
         let mut conn = self.get_connection().await
             .map_err(JsErrorBox::from_err)?;
 
         let result = self.backend.atomic_write(&mut conn, write).await
             .map_err(JsErrorBox::from_err)?;
+
+        // Notify watchers of changed keys after a successful commit
+        if result.is_some() {
+            for key in &mutated_keys {
+                self.notifier.notify_key_update(key);
+            }
+        }
 
         Ok(result)
     }
