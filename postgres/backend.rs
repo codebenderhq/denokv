@@ -9,7 +9,6 @@ use denokv_proto::{
     AtomicWrite, Check, CommitResult, Enqueue, KvEntry, KvValue, Mutation, MutationKind,
     ReadRange, Versionstamp,
 };
-use rand::RngCore;
 use serde_json::Value;
 use tokio_postgres::Row;
 
@@ -102,6 +101,25 @@ impl PostgresBackend {
             &[],
         ).await?;
 
+        // Monotonic version counter — matches SQLite's data_version table.
+        // The single row is locked by UPDATE during atomic_write, which
+        // serializes all writers without needing SERIALIZABLE isolation.
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS data_version (
+                k INTEGER PRIMARY KEY DEFAULT 0,
+                version BIGINT NOT NULL DEFAULT 0
+            )
+            "#,
+            &[],
+        ).await?;
+
+        // Seed the row if it doesn't exist
+        conn.execute(
+            "INSERT INTO data_version (k, version) VALUES (0, 0) ON CONFLICT DO NOTHING",
+            &[],
+        ).await?;
+
         Ok(())
     }
 
@@ -170,38 +188,26 @@ impl PostgresBackend {
         Ok(entries)
     }
 
-    /// Perform an atomic write operation
+    /// Perform an atomic write operation.
+    ///
+    /// Concurrency is handled by a monotonic version counter in the
+    /// `data_version` table (matching the SQLite backend design).
+    /// `UPDATE ... RETURNING` takes an exclusive row lock on the counter,
+    /// which serializes all writers under plain READ COMMITTED isolation —
+    /// no SERIALIZABLE needed, no aborted transactions to retry.
     pub async fn atomic_write(
         &self,
         conn: &mut Client,
         write: AtomicWrite,
     ) -> PostgresResult<Option<CommitResult>> {
-        match self.atomic_write_inner(conn, write).await {
-            Ok(result) => Ok(result),
-            Err(PostgresError::DatabaseError(msg)) => {
-                // PostgreSQL serialization failure (40001) means a concurrent
-                // transaction conflicted — treat as an atomic check failure.
-                // The error string from tokio_postgres contains the SQLSTATE.
-                if msg.contains("could not serialize access") || msg.contains("40001") {
-                    Ok(None)
-                } else {
-                    Err(PostgresError::DatabaseError(msg))
-                }
-            }
-            Err(err) => Err(err),
-        }
-    }
+        let tx = conn.transaction().await?;
 
-    async fn atomic_write_inner(
-        &self,
-        conn: &mut Client,
-        write: AtomicWrite,
-    ) -> PostgresResult<Option<CommitResult>> {
-        let tx = conn
-            .build_transaction()
-            .isolation_level(tokio_postgres::IsolationLevel::Serializable)
-            .start()
-            .await?;
+        // Lock the version counter first — this serializes all writers.
+        // The row lock is held until tx.commit() / rollback.
+        let new_version: i64 = tx.query_one(
+            "UPDATE data_version SET version = version + 1 WHERE k = 0 RETURNING version",
+            &[],
+        ).await?.get(0);
 
         // Perform checks — treat expired keys as non-existent
         let now_ms = crate::time::utc_now().timestamp_millis();
@@ -222,9 +228,8 @@ impl PostgresBackend {
             }
         }
 
-        // Generate new versionstamp
-        let mut versionstamp = [0; 10];
-        rand::thread_rng().fill_bytes(&mut versionstamp);
+        // Convert version to 10-byte versionstamp (matches SQLite format)
+        let versionstamp = version_to_versionstamp(new_version);
 
         // Perform mutations
         for mutation in &write.mutations {
@@ -263,7 +268,6 @@ impl PostgresBackend {
                     self.handle_max_mutation(&tx, &mutation.key, value, &versionstamp).await?;
                 }
                 MutationKind::SetSuffixVersionstampedKey(value) => {
-                    // This is a special case - we need to generate a new key with the versionstamp
                     let mut new_key = mutation.key.clone();
                     new_key.extend_from_slice(&versionstamp);
 
@@ -614,4 +618,12 @@ impl PostgresBackend {
             }
         }
     }
+}
+
+/// Convert a monotonic i64 version to a 10-byte versionstamp.
+/// Matches the SQLite backend format: 8-byte big-endian version + 2 zero bytes.
+fn version_to_versionstamp(version: i64) -> Versionstamp {
+    let mut versionstamp = [0u8; 10];
+    versionstamp[..8].copy_from_slice(&version.to_be_bytes());
+    versionstamp
 }
