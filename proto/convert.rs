@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 
 use crate::datapath as pb;
 use crate::AtomicWrite;
+use crate::AtomicWriteOutcome;
 use crate::Check;
 use crate::CommitResult;
 use crate::Enqueue;
@@ -260,12 +261,28 @@ impl From<Vec<ReadRangeOutput>> for pb::SnapshotReadOutput {
 impl From<Option<CommitResult>> for pb::AtomicWriteOutput {
   fn from(commit_result: Option<CommitResult>) -> pb::AtomicWriteOutput {
     match commit_result {
-      None => pb::AtomicWriteOutput {
-        status: pb::AtomicWriteStatus::AwCheckFailure as i32,
-        failed_checks: vec![], // todo!
-        ..Default::default()
-      },
-      Some(commit_result) => pb::AtomicWriteOutput {
+      None => AtomicWriteOutcome::CheckFailed {
+        failed_checks: vec![],
+      }
+      .into(),
+      Some(commit_result) => {
+        AtomicWriteOutcome::Committed(commit_result).into()
+      }
+    }
+  }
+}
+
+impl From<AtomicWriteOutcome> for pb::AtomicWriteOutput {
+  fn from(outcome: AtomicWriteOutcome) -> pb::AtomicWriteOutput {
+    match outcome {
+      AtomicWriteOutcome::CheckFailed { failed_checks } => {
+        pb::AtomicWriteOutput {
+          status: pb::AtomicWriteStatus::AwCheckFailure as i32,
+          failed_checks,
+          ..Default::default()
+        }
+      }
+      AtomicWriteOutcome::Committed(commit_result) => pb::AtomicWriteOutput {
         status: pb::AtomicWriteStatus::AwSuccess as i32,
         versionstamp: commit_result.versionstamp.to_vec(),
         ..Default::default()
@@ -330,5 +347,32 @@ impl From<Vec<WatchKeyOutput>> for pb::WatchOutput {
       status: pb::SnapshotReadStatus::SrSuccess as i32,
       keys,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn atomic_write_with_checks(count: usize) -> pb::AtomicWrite {
+    pb::AtomicWrite {
+      checks: (0..count)
+        .map(|index| pb::Check {
+          key: index.to_be_bytes().to_vec(),
+          versionstamp: vec![],
+        })
+        .collect(),
+      mutations: vec![],
+      enqueues: vec![],
+    }
+  }
+
+  #[test]
+  fn atomic_write_check_limit_matches_deno_runtime() {
+    assert!(AtomicWrite::try_from(atomic_write_with_checks(100)).is_ok());
+    assert!(matches!(
+      AtomicWrite::try_from(atomic_write_with_checks(101)),
+      Err(ConvertError::TooManyChecks)
+    ));
   }
 }

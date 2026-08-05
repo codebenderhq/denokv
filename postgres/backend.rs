@@ -6,8 +6,8 @@ use std::num::NonZeroU32;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Client, Pool};
 use denokv_proto::{
-    AtomicWrite, Check, CommitResult, Enqueue, KvEntry, KvValue, Mutation, MutationKind,
-    ReadRange, Versionstamp,
+  AtomicWrite, AtomicWriteOutcome, Check, CommitResult, Enqueue, KvEntry,
+  KvValue, Mutation, MutationKind, ReadRange, Versionstamp,
 };
 use serde_json::Value;
 use tokio_postgres::Row;
@@ -17,22 +17,22 @@ use crate::message_handle::PostgresMessageHandle;
 
 /// PostgreSQL backend implementation
 pub struct PostgresBackend {
-    pub pool: Pool,
+  pub pool: Pool,
 }
 
 impl PostgresBackend {
-    pub fn new(pool: Pool) -> Self {
-        Self { pool }
-    }
+  pub fn new(pool: Pool) -> Self {
+    Self { pool }
+  }
 
-    /// Initialize the database schema
-    pub async fn initialize_schema(&self) -> PostgresResult<()> {
-        let conn = self.pool.get().await?;
+  /// Initialize the database schema
+  pub async fn initialize_schema(&self) -> PostgresResult<()> {
+    let conn = self.pool.get().await?;
 
-
-        // Create the main KV table
-        conn.execute(
-            r#"
+    // Create the main KV table
+    conn
+      .execute(
+        r#"
             CREATE TABLE IF NOT EXISTS kv_store (
                 key BYTEA PRIMARY KEY,
                 value BYTEA NOT NULL,
@@ -43,28 +43,32 @@ impl PostgresBackend {
                 expires_at BIGINT
             )
             "#,
-            &[],
-        ).await?;
+        &[],
+      )
+      .await?;
 
-        // Create indexes for performance
-        conn.execute(
+    // Create indexes for performance
+    conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_kv_versionstamp ON kv_store(versionstamp)",
             &[],
         ).await?;
 
-        conn.execute(
+    conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_kv_expires_at ON kv_store(expires_at) WHERE expires_at IS NOT NULL",
             &[],
         ).await?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kv_updated_at ON kv_store(updated_at)",
-            &[],
-        ).await?;
+    conn
+      .execute(
+        "CREATE INDEX IF NOT EXISTS idx_kv_updated_at ON kv_store(updated_at)",
+        &[],
+      )
+      .await?;
 
-        // Create queue tables
-        conn.execute(
-            r#"
+    // Create queue tables
+    conn
+      .execute(
+        r#"
             CREATE TABLE IF NOT EXISTS queue_messages (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 payload BYTEA NOT NULL,
@@ -75,11 +79,13 @@ impl PostgresBackend {
                 retry_count INTEGER DEFAULT 0
             )
             "#,
-            &[],
-        ).await?;
+        &[],
+      )
+      .await?;
 
-        conn.execute(
-            r#"
+    conn
+      .execute(
+        r#"
             CREATE TABLE IF NOT EXISTS queue_running (
                 message_id UUID PRIMARY KEY REFERENCES queue_messages(id),
                 deadline BIGINT NOT NULL,
@@ -87,51 +93,54 @@ impl PostgresBackend {
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             "#,
-            &[],
-        ).await?;
+        &[],
+      )
+      .await?;
 
-        // Create indexes for queue
-        conn.execute(
+    // Create indexes for queue
+    conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_queue_deadline ON queue_messages(deadline)",
             &[],
         ).await?;
 
-        conn.execute(
+    conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_queue_running_deadline ON queue_running(deadline)",
             &[],
         ).await?;
 
-        // Monotonic version counter — matches SQLite's data_version table.
-        // The single row is locked by UPDATE during atomic_write, which
-        // serializes all writers without needing SERIALIZABLE isolation.
-        conn.execute(
-            r#"
+    // Monotonic version counter — matches SQLite's data_version table.
+    // The single row is locked by UPDATE during atomic_write, which
+    // serializes all writers without needing SERIALIZABLE isolation.
+    conn
+      .execute(
+        r#"
             CREATE TABLE IF NOT EXISTS data_version (
                 k INTEGER PRIMARY KEY DEFAULT 0,
                 version BIGINT NOT NULL DEFAULT 0
             )
             "#,
-            &[],
-        ).await?;
+        &[],
+      )
+      .await?;
 
-        // Seed the row if it doesn't exist
-        conn.execute(
+    // Seed the row if it doesn't exist
+    conn.execute(
             "INSERT INTO data_version (k, version) VALUES (0, 0) ON CONFLICT DO NOTHING",
             &[],
         ).await?;
 
-        Ok(())
-    }
+    Ok(())
+  }
 
-    /// Read a range of keys, excluding expired entries.
-    pub async fn read_range(
-        &self,
-        conn: &Client,
-        request: &ReadRange,
-    ) -> PostgresResult<Vec<KvEntry>> {
-        let now_ms = crate::time::utc_now().timestamp_millis();
-        let query = if request.reverse {
-            r#"
+  /// Read a range of keys, excluding expired entries.
+  pub async fn read_range(
+    &self,
+    conn: &Client,
+    request: &ReadRange,
+  ) -> PostgresResult<Vec<KvEntry>> {
+    let now_ms = crate::time::utc_now().timestamp_millis();
+    let query = if request.reverse {
+      r#"
             SELECT key, value, value_encoding, versionstamp
             FROM kv_store
             WHERE key >= $1 AND key < $2
@@ -139,8 +148,8 @@ impl PostgresBackend {
             ORDER BY key DESC
             LIMIT $3
             "#
-        } else {
-            r#"
+    } else {
+      r#"
             SELECT key, value, value_encoding, versionstamp
             FROM kv_store
             WHERE key >= $1 AND key < $2
@@ -148,97 +157,112 @@ impl PostgresBackend {
             ORDER BY key ASC
             LIMIT $3
             "#
-        };
+    };
 
-        let rows = conn.query(query, &[
-            &request.start,
-            &request.end,
-            &(request.limit.get() as i64),
-            &now_ms,
-        ]).await?;
+    let rows = conn
+      .query(
+        query,
+        &[
+          &request.start,
+          &request.end,
+          &(request.limit.get() as i64),
+          &now_ms,
+        ],
+      )
+      .await?;
 
-        let mut entries = Vec::new();
-        for row in rows {
-            let key: Vec<u8> = row.get("key");
-            let value: Vec<u8> = row.get("value");
-            let encoding: i32 = row.get("value_encoding");
-            let versionstamp: Vec<u8> = row.get("versionstamp");
+    let mut entries = Vec::new();
+    for row in rows {
+      let key: Vec<u8> = row.get("key");
+      let value: Vec<u8> = row.get("value");
+      let encoding: i32 = row.get("value_encoding");
+      let versionstamp: Vec<u8> = row.get("versionstamp");
 
-            let kv_value = match encoding {
-                1 => KvValue::V8(value),
-                2 => {
-                    let mut buf = [0; 8];
-                    buf.copy_from_slice(&value);
-                    KvValue::U64(u64::from_le_bytes(buf))
-                }
-                3 => KvValue::Bytes(value),
-                _ => return Err(PostgresError::InvalidData(format!("Unknown encoding: {}", encoding))),
-            };
-
-            let mut versionstamp_array = [0; 10];
-            versionstamp_array.copy_from_slice(&versionstamp);
-
-            entries.push(KvEntry {
-                key,
-                value: kv_value,
-                versionstamp: versionstamp_array,
-            });
+      let kv_value = match encoding {
+        1 => KvValue::V8(value),
+        2 => {
+          let mut buf = [0; 8];
+          buf.copy_from_slice(&value);
+          KvValue::U64(u64::from_le_bytes(buf))
         }
+        3 => KvValue::Bytes(value),
+        _ => {
+          return Err(PostgresError::InvalidData(format!(
+            "Unknown encoding: {}",
+            encoding
+          )))
+        }
+      };
 
-        Ok(entries)
+      let mut versionstamp_array = [0; 10];
+      versionstamp_array.copy_from_slice(&versionstamp);
+
+      entries.push(KvEntry {
+        key,
+        value: kv_value,
+        versionstamp: versionstamp_array,
+      });
     }
 
-    /// Perform an atomic write operation.
-    ///
-    /// Concurrency is handled by a monotonic version counter in the
-    /// `data_version` table (matching the SQLite backend design).
-    /// `UPDATE ... RETURNING` takes an exclusive row lock on the counter,
-    /// which serializes all writers under plain READ COMMITTED isolation —
-    /// no SERIALIZABLE needed, no aborted transactions to retry.
-    pub async fn atomic_write(
-        &self,
-        conn: &mut Client,
-        write: AtomicWrite,
-    ) -> PostgresResult<Option<CommitResult>> {
-        let tx = conn.transaction().await?;
+    Ok(entries)
+  }
 
-        // Lock the version counter first — this serializes all writers.
-        // The row lock is held until tx.commit() / rollback.
-        let new_version: i64 = tx.query_one(
+  /// Perform an atomic write operation.
+  ///
+  /// Concurrency is handled by a monotonic version counter in the
+  /// `data_version` table (matching the SQLite backend design).
+  /// `UPDATE ... RETURNING` takes an exclusive row lock on the counter,
+  /// which serializes all writers under plain READ COMMITTED isolation —
+  /// no SERIALIZABLE needed, no aborted transactions to retry.
+  pub async fn atomic_write(
+    &self,
+    conn: &mut Client,
+    write: AtomicWrite,
+  ) -> PostgresResult<AtomicWriteOutcome> {
+    let tx = conn.transaction().await?;
+
+    // Lock the version counter first — this serializes all writers.
+    // The row lock is held until tx.commit() / rollback.
+    let new_version: i64 = tx.query_one(
             "UPDATE data_version SET version = version + 1 WHERE k = 0 RETURNING version",
             &[],
         ).await?.get(0);
 
-        // Perform checks — treat expired keys as non-existent
-        let now_ms = crate::time::utc_now().timestamp_millis();
-        for check in &write.checks {
-            let row = tx.query_opt(
+    // Perform checks — treat expired keys as non-existent
+    let now_ms = crate::time::utc_now().timestamp_millis();
+    let mut failed_checks = Vec::new();
+    for (index, check) in write.checks.iter().enumerate() {
+      let row = tx.query_opt(
                 "SELECT versionstamp FROM kv_store WHERE key = $1 AND (expires_at IS NULL OR expires_at > $2)",
                 &[&check.key, &now_ms],
             ).await?;
 
-            let current_versionstamp = row.map(|r| r.get::<_, Vec<u8>>("versionstamp"));
+      let current_versionstamp =
+        row.map(|r| r.get::<_, Vec<u8>>("versionstamp"));
 
-            if let Some(expected) = &check.versionstamp {
-                if current_versionstamp.as_ref().map(|v| v.as_slice()) != Some(expected.as_slice()) {
-                    return Ok(None); // Check failed
-                }
-            } else if current_versionstamp.is_some() {
-                return Ok(None); // Expected key to not exist, but it does
-            }
+      if let Some(expected) = &check.versionstamp {
+        if current_versionstamp.as_deref() != Some(expected.as_slice()) {
+          failed_checks.push(index as u32);
         }
+      } else if current_versionstamp.is_some() {
+        failed_checks.push(index as u32);
+      }
+    }
+    if !failed_checks.is_empty() {
+      return Ok(AtomicWriteOutcome::CheckFailed { failed_checks });
+    }
 
-        // Convert version to 10-byte versionstamp (matches SQLite format)
-        let versionstamp = version_to_versionstamp(new_version);
+    // Convert version to 10-byte versionstamp (matches SQLite format)
+    let versionstamp = version_to_versionstamp(new_version);
 
-        // Perform mutations
-        for mutation in &write.mutations {
-            match &mutation.kind {
-                MutationKind::Set(value) => {
-                    let (value_bytes, encoding) = self.encode_value(value);
-                    let expires_at = mutation.expire_at;
+    // Perform mutations
+    for mutation in &write.mutations {
+      match &mutation.kind {
+        MutationKind::Set(value) => {
+          let (value_bytes, encoding) = self.encode_value(value);
+          let expires_at = mutation.expire_at;
 
-                    tx.execute(
+          tx.execute(
                         r#"
                         INSERT INTO kv_store (key, value, value_encoding, versionstamp, expires_at, updated_at)
                         VALUES ($1, $2, $3, $4, $5, NOW())
@@ -249,103 +273,119 @@ impl PostgresBackend {
                             expires_at = EXCLUDED.expires_at,
                             updated_at = NOW()
                         "#,
-                        &[&mutation.key, &value_bytes, &(encoding as i32), &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
+                        &[&mutation.key, &value_bytes, &encoding, &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
                     ).await?;
-                }
-                MutationKind::Delete => {
-                    tx.execute(
-                        "DELETE FROM kv_store WHERE key = $1",
-                        &[&mutation.key],
-                    ).await?;
-                }
-                MutationKind::Sum { value, .. } => {
-                    self.handle_sum_mutation(&tx, &mutation.key, value, &versionstamp).await?;
-                }
-                MutationKind::Min(value) => {
-                    self.handle_min_mutation(&tx, &mutation.key, value, &versionstamp).await?;
-                }
-                MutationKind::Max(value) => {
-                    self.handle_max_mutation(&tx, &mutation.key, value, &versionstamp).await?;
-                }
-                MutationKind::SetSuffixVersionstampedKey(value) => {
-                    let mut new_key = mutation.key.clone();
-                    new_key.extend_from_slice(&versionstamp);
+        }
+        MutationKind::Delete => {
+          tx.execute("DELETE FROM kv_store WHERE key = $1", &[&mutation.key])
+            .await?;
+        }
+        MutationKind::Sum { value, .. } => {
+          self
+            .handle_sum_mutation(&tx, &mutation.key, value, &versionstamp)
+            .await?;
+        }
+        MutationKind::Min(value) => {
+          self
+            .handle_min_mutation(&tx, &mutation.key, value, &versionstamp)
+            .await?;
+        }
+        MutationKind::Max(value) => {
+          self
+            .handle_max_mutation(&tx, &mutation.key, value, &versionstamp)
+            .await?;
+        }
+        MutationKind::SetSuffixVersionstampedKey(value) => {
+          let mut new_key = mutation.key.clone();
+          new_key.extend_from_slice(&versionstamp);
 
-                    let (value_bytes, encoding) = self.encode_value(value);
-                    let expires_at = mutation.expire_at;
+          let (value_bytes, encoding) = self.encode_value(value);
+          let expires_at = mutation.expire_at;
 
-                    tx.execute(
+          tx.execute(
                         r#"
                         INSERT INTO kv_store (key, value, value_encoding, versionstamp, expires_at, updated_at)
                         VALUES ($1, $2, $3, $4, $5, NOW())
                         "#,
-                        &[&new_key, &value_bytes, &(encoding as i32), &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
+                        &[&new_key, &value_bytes, &encoding, &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
                     ).await?;
-                }
-            }
         }
+      }
+    }
 
-        // Handle enqueues
-        for enqueue in &write.enqueues {
-            let keys_json = serde_json::to_string(&enqueue.keys_if_undelivered)?;
-            let backoff_json = enqueue.backoff_schedule.as_ref().map(|b| serde_json::to_string(b)).transpose()?;
+    // Handle enqueues
+    for enqueue in &write.enqueues {
+      let keys_json = serde_json::to_string(&enqueue.keys_if_undelivered)?;
+      let backoff_json = enqueue
+        .backoff_schedule
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
 
-            tx.execute(
+      tx.execute(
                 r#"
                 INSERT INTO queue_messages (payload, deadline, keys_if_undelivered, backoff_schedule)
                 VALUES ($1, $2, $3, $4)
                 "#,
                 &[&enqueue.payload, &enqueue.deadline.timestamp_millis(), &keys_json, &backoff_json],
             ).await?;
-        }
-
-        tx.commit().await?;
-        Ok(Some(CommitResult { versionstamp }))
     }
 
-    /// Handle sum mutation
-    async fn handle_sum_mutation(
-        &self,
-        tx: &tokio_postgres::Transaction<'_>,
-        key: &[u8],
-        value: &KvValue,
-        versionstamp: &Versionstamp,
-    ) -> PostgresResult<()> {
-        let (value_bytes, encoding) = self.encode_value(value);
-        
-        if encoding != 2 {
-            return Err(PostgresError::InvalidData("Sum operation only supports U64 values".to_string()));
-        }
+    tx.commit().await?;
+    Ok(AtomicWriteOutcome::Committed(CommitResult { versionstamp }))
+  }
 
-        let sum_value = match value {
-            KvValue::U64(v) => *v as i64,
-            _ => return Err(PostgresError::InvalidData("Sum operation only supports U64 values".to_string())),
-        };
+  /// Handle sum mutation
+  async fn handle_sum_mutation(
+    &self,
+    tx: &tokio_postgres::Transaction<'_>,
+    key: &[u8],
+    value: &KvValue,
+    versionstamp: &Versionstamp,
+  ) -> PostgresResult<()> {
+    let (value_bytes, encoding) = self.encode_value(value);
 
-        // First, try to get the current value
-        let current_row = tx.query_opt(
-            "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
-            &[&key],
-        ).await?;
+    if encoding != 2 {
+      return Err(PostgresError::InvalidData(
+        "Sum operation only supports U64 values".to_string(),
+      ));
+    }
 
-        let new_value = if let Some(row) = current_row {
-            // Parse current value as i64 and add sum_value
-            let current_bytes: Vec<u8> = row.get(0);
-            if current_bytes.len() == 8 {
-                let mut bytes_array = [0u8; 8];
-                bytes_array.copy_from_slice(&current_bytes);
-                let current_int = i64::from_le_bytes(bytes_array);
-                current_int + sum_value
-            } else {
-                sum_value
-            }
-        } else {
-            sum_value
-        };
+    let sum_value = match value {
+      KvValue::U64(v) => *v as i64,
+      _ => {
+        return Err(PostgresError::InvalidData(
+          "Sum operation only supports U64 values".to_string(),
+        ))
+      }
+    };
 
-        let new_value_bytes = new_value.to_le_bytes().to_vec();
+    // First, try to get the current value
+    let current_row = tx
+      .query_opt(
+        "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
+        &[&key],
+      )
+      .await?;
 
-        tx.execute(
+    let new_value = if let Some(row) = current_row {
+      // Parse current value as i64 and add sum_value
+      let current_bytes: Vec<u8> = row.get(0);
+      if current_bytes.len() == 8 {
+        let mut bytes_array = [0u8; 8];
+        bytes_array.copy_from_slice(&current_bytes);
+        let current_int = i64::from_le_bytes(bytes_array);
+        current_int + sum_value
+      } else {
+        sum_value
+      }
+    } else {
+      sum_value
+    };
+
+    let new_value_bytes = new_value.to_le_bytes().to_vec();
+
+    tx.execute(
             r#"
             INSERT INTO kv_store (key, value, value_encoding, versionstamp, updated_at)
             VALUES ($1, $2, 2, $3, NOW())
@@ -358,52 +398,60 @@ impl PostgresBackend {
             &[&key, &new_value_bytes, &versionstamp.as_slice()],
         ).await?;
 
-        Ok(())
+    Ok(())
+  }
+
+  /// Handle min mutation
+  async fn handle_min_mutation(
+    &self,
+    tx: &tokio_postgres::Transaction<'_>,
+    key: &[u8],
+    value: &KvValue,
+    versionstamp: &Versionstamp,
+  ) -> PostgresResult<()> {
+    let (value_bytes, encoding) = self.encode_value(value);
+
+    if encoding != 2 {
+      return Err(PostgresError::InvalidData(
+        "Min operation only supports U64 values".to_string(),
+      ));
     }
 
-    /// Handle min mutation
-    async fn handle_min_mutation(
-        &self,
-        tx: &tokio_postgres::Transaction<'_>,
-        key: &[u8],
-        value: &KvValue,
-        versionstamp: &Versionstamp,
-    ) -> PostgresResult<()> {
-        let (value_bytes, encoding) = self.encode_value(value);
-        
-        if encoding != 2 {
-            return Err(PostgresError::InvalidData("Min operation only supports U64 values".to_string()));
-        }
+    let min_value = match value {
+      KvValue::U64(v) => *v as i64,
+      _ => {
+        return Err(PostgresError::InvalidData(
+          "Min operation only supports U64 values".to_string(),
+        ))
+      }
+    };
 
-        let min_value = match value {
-            KvValue::U64(v) => *v as i64,
-            _ => return Err(PostgresError::InvalidData("Min operation only supports U64 values".to_string())),
-        };
+    // First, try to get the current value
+    let current_row = tx
+      .query_opt(
+        "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
+        &[&key],
+      )
+      .await?;
 
-        // First, try to get the current value
-        let current_row = tx.query_opt(
-            "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
-            &[&key],
-        ).await?;
+    let new_value = if let Some(row) = current_row {
+      // Parse current value as i64 and take minimum
+      let current_bytes: Vec<u8> = row.get(0);
+      if current_bytes.len() == 8 {
+        let mut bytes_array = [0u8; 8];
+        bytes_array.copy_from_slice(&current_bytes);
+        let current_int = i64::from_le_bytes(bytes_array);
+        current_int.min(min_value)
+      } else {
+        min_value
+      }
+    } else {
+      min_value
+    };
 
-        let new_value = if let Some(row) = current_row {
-            // Parse current value as i64 and take minimum
-            let current_bytes: Vec<u8> = row.get(0);
-            if current_bytes.len() == 8 {
-                let mut bytes_array = [0u8; 8];
-                bytes_array.copy_from_slice(&current_bytes);
-                let current_int = i64::from_le_bytes(bytes_array);
-                current_int.min(min_value)
-            } else {
-                min_value
-            }
-        } else {
-            min_value
-        };
+    let new_value_bytes = new_value.to_le_bytes().to_vec();
 
-        let new_value_bytes = new_value.to_le_bytes().to_vec();
-
-        tx.execute(
+    tx.execute(
             r#"
             INSERT INTO kv_store (key, value, value_encoding, versionstamp, updated_at)
             VALUES ($1, $2, 2, $3, NOW())
@@ -416,52 +464,60 @@ impl PostgresBackend {
             &[&key, &new_value_bytes, &versionstamp.as_slice()],
         ).await?;
 
-        Ok(())
+    Ok(())
+  }
+
+  /// Handle max mutation
+  async fn handle_max_mutation(
+    &self,
+    tx: &tokio_postgres::Transaction<'_>,
+    key: &[u8],
+    value: &KvValue,
+    versionstamp: &Versionstamp,
+  ) -> PostgresResult<()> {
+    let (value_bytes, encoding) = self.encode_value(value);
+
+    if encoding != 2 {
+      return Err(PostgresError::InvalidData(
+        "Max operation only supports U64 values".to_string(),
+      ));
     }
 
-    /// Handle max mutation
-    async fn handle_max_mutation(
-        &self,
-        tx: &tokio_postgres::Transaction<'_>,
-        key: &[u8],
-        value: &KvValue,
-        versionstamp: &Versionstamp,
-    ) -> PostgresResult<()> {
-        let (value_bytes, encoding) = self.encode_value(value);
-        
-        if encoding != 2 {
-            return Err(PostgresError::InvalidData("Max operation only supports U64 values".to_string()));
-        }
+    let max_value = match value {
+      KvValue::U64(v) => *v as i64,
+      _ => {
+        return Err(PostgresError::InvalidData(
+          "Max operation only supports U64 values".to_string(),
+        ))
+      }
+    };
 
-        let max_value = match value {
-            KvValue::U64(v) => *v as i64,
-            _ => return Err(PostgresError::InvalidData("Max operation only supports U64 values".to_string())),
-        };
+    // First, try to get the current value
+    let current_row = tx
+      .query_opt(
+        "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
+        &[&key],
+      )
+      .await?;
 
-        // First, try to get the current value
-        let current_row = tx.query_opt(
-            "SELECT value FROM kv_store WHERE key = $1 AND value_encoding = 2",
-            &[&key],
-        ).await?;
+    let new_value = if let Some(row) = current_row {
+      // Parse current value as i64 and take maximum
+      let current_bytes: Vec<u8> = row.get(0);
+      if current_bytes.len() == 8 {
+        let mut bytes_array = [0u8; 8];
+        bytes_array.copy_from_slice(&current_bytes);
+        let current_int = i64::from_le_bytes(bytes_array);
+        current_int.max(max_value)
+      } else {
+        max_value
+      }
+    } else {
+      max_value
+    };
 
-        let new_value = if let Some(row) = current_row {
-            // Parse current value as i64 and take maximum
-            let current_bytes: Vec<u8> = row.get(0);
-            if current_bytes.len() == 8 {
-                let mut bytes_array = [0u8; 8];
-                bytes_array.copy_from_slice(&current_bytes);
-                let current_int = i64::from_le_bytes(bytes_array);
-                current_int.max(max_value)
-            } else {
-                max_value
-            }
-        } else {
-            max_value
-        };
+    let new_value_bytes = new_value.to_le_bytes().to_vec();
 
-        let new_value_bytes = new_value.to_le_bytes().to_vec();
-
-        tx.execute(
+    tx.execute(
             r#"
             INSERT INTO kv_store (key, value, value_encoding, versionstamp, updated_at)
             VALUES ($1, $2, 2, $3, NOW())
@@ -474,19 +530,20 @@ impl PostgresBackend {
             &[&key, &new_value_bytes, &versionstamp.as_slice()],
         ).await?;
 
-        Ok(())
-    }
+    Ok(())
+  }
 
-    /// Dequeue the next message from the queue
-    pub async fn dequeue_next_message(
-        &self,
-        conn: &mut Client,
-    ) -> PostgresResult<Option<PostgresMessageHandle>> {
-        let tx = conn.transaction().await?;
+  /// Dequeue the next message from the queue
+  pub async fn dequeue_next_message(
+    &self,
+    conn: &mut Client,
+  ) -> PostgresResult<Option<PostgresMessageHandle>> {
+    let tx = conn.transaction().await?;
 
-        // Find the next message to process
-        let row = tx.query_opt(
-            r#"
+    // Find the next message to process
+    let row = tx
+      .query_opt(
+        r#"
             SELECT id, payload, deadline, keys_if_undelivered, backoff_schedule
             FROM queue_messages
             WHERE deadline <= NOW()
@@ -495,28 +552,36 @@ impl PostgresBackend {
             LIMIT 1
             FOR UPDATE SKIP LOCKED
             "#,
-            &[],
-        ).await?;
+        &[],
+      )
+      .await?;
 
-        if let Some(row) = row {
-            let id_str: String = row.get("id");
-            let id = uuid::Uuid::parse_str(&id_str)?;
-            let payload: Vec<u8> = row.get("payload");
-            let deadline_str: String = row.get("deadline");
-            let deadline_naive = chrono::NaiveDateTime::parse_from_str(&deadline_str, "%Y-%m-%d %H:%M:%S%.f")
-                .map_err(|e| PostgresError::InvalidData(format!("Invalid deadline format: {}", e)))?;
-            let deadline: DateTime<Utc> = DateTime::from_naive_utc_and_offset(deadline_naive, Utc);
-            let keys_json: String = row.get("keys_if_undelivered");
-            let keys_if_undelivered: Vec<Vec<u8>> = serde_json::from_str(&keys_json)?;
-            let backoff_json: Option<String> = row.get("backoff_schedule");
-            let backoff_schedule: Option<Vec<u32>> = if let Some(json) = backoff_json {
-                Some(serde_json::from_str(&json)?)
-            } else {
-                None
-            };
+    if let Some(row) = row {
+      let id_str: String = row.get("id");
+      let id = uuid::Uuid::parse_str(&id_str)?;
+      let payload: Vec<u8> = row.get("payload");
+      let deadline_str: String = row.get("deadline");
+      let deadline_naive = chrono::NaiveDateTime::parse_from_str(
+        &deadline_str,
+        "%Y-%m-%d %H:%M:%S%.f",
+      )
+      .map_err(|e| {
+        PostgresError::InvalidData(format!("Invalid deadline format: {}", e))
+      })?;
+      let deadline: DateTime<Utc> =
+        DateTime::from_naive_utc_and_offset(deadline_naive, Utc);
+      let keys_json: String = row.get("keys_if_undelivered");
+      let keys_if_undelivered: Vec<Vec<u8>> = serde_json::from_str(&keys_json)?;
+      let backoff_json: Option<String> = row.get("backoff_schedule");
+      let backoff_schedule: Option<Vec<u32>> = if let Some(json) = backoff_json
+      {
+        Some(serde_json::from_str(&json)?)
+      } else {
+        None
+      };
 
-            // Move to running table
-            tx.execute(
+      // Move to running table
+      tx.execute(
                 r#"
                 INSERT INTO queue_running (message_id, deadline, started_at, updated_at)
                 VALUES ($1, $2, NOW(), NOW())
@@ -524,106 +589,118 @@ impl PostgresBackend {
                 &[&id_str, &deadline_str],
             ).await?;
 
-            tx.commit().await?;
+      tx.commit().await?;
 
-            Ok(Some(PostgresMessageHandle {
-                id,
-                payload: Some(payload),
-                pool: self.pool.clone(),
-            }))
-        } else {
-            Ok(None)
-        }
+      Ok(Some(PostgresMessageHandle {
+        id,
+        payload: Some(payload),
+        pool: self.pool.clone(),
+      }))
+    } else {
+      Ok(None)
     }
+  }
 
-    /// Delete all expired keys. Returns the number of rows removed.
-    pub async fn collect_expired(&self) -> PostgresResult<u64> {
-        let conn = self.pool.get().await?;
-        let now_ms = crate::time::utc_now().timestamp_millis();
-        let deleted = conn.execute(
+  /// Delete all expired keys. Returns the number of rows removed.
+  pub async fn collect_expired(&self) -> PostgresResult<u64> {
+    let conn = self.pool.get().await?;
+    let now_ms = crate::time::utc_now().timestamp_millis();
+    let deleted = conn.execute(
             "DELETE FROM kv_store WHERE expires_at IS NOT NULL AND expires_at <= $1",
             &[&now_ms],
         ).await?;
-        Ok(deleted)
-    }
+    Ok(deleted)
+  }
 
-    /// Requeue messages stuck in queue_running past their deadline.
-    /// This recovers from dead workers that never finished their messages.
-    /// Returns the number of messages requeued.
-    pub async fn queue_cleanup(&self) -> PostgresResult<u64> {
-        let mut conn = self.pool.get().await?;
-        let tx = conn.transaction().await?;
-        let now_ms = crate::time::utc_now().timestamp_millis();
+  /// Requeue messages stuck in queue_running past their deadline.
+  /// This recovers from dead workers that never finished their messages.
+  /// Returns the number of messages requeued.
+  pub async fn queue_cleanup(&self) -> PostgresResult<u64> {
+    let mut conn = self.pool.get().await?;
+    let tx = conn.transaction().await?;
+    let now_ms = crate::time::utc_now().timestamp_millis();
 
-        // Find running messages past their deadline (dead worker recovery)
-        let rows = tx.query(
-            "SELECT message_id FROM queue_running WHERE deadline <= $1 LIMIT 100",
-            &[&now_ms],
-        ).await?;
+    // Find running messages past their deadline (dead worker recovery)
+    let rows = tx
+      .query(
+        "SELECT message_id FROM queue_running WHERE deadline <= $1 LIMIT 100",
+        &[&now_ms],
+      )
+      .await?;
 
-        let mut requeued = 0u64;
-        for row in &rows {
-            let message_id: String = row.get("message_id");
+    let mut requeued = 0u64;
+    for row in &rows {
+      let message_id: String = row.get("message_id");
 
-            // Fetch the original message to get backoff info
-            let msg_row = tx.query_opt(
-                r#"SELECT backoff_schedule, retry_count
+      // Fetch the original message to get backoff info
+      let msg_row = tx
+        .query_opt(
+          r#"SELECT backoff_schedule, retry_count
                    FROM queue_messages WHERE id = $1"#,
-                &[&message_id],
-            ).await?;
+          &[&message_id],
+        )
+        .await?;
 
-            // Remove from running table
-            tx.execute("DELETE FROM queue_running WHERE message_id = $1", &[&message_id]).await?;
+      // Remove from running table
+      tx.execute(
+        "DELETE FROM queue_running WHERE message_id = $1",
+        &[&message_id],
+      )
+      .await?;
 
-            if let Some(msg) = msg_row {
-                let backoff_json: Option<String> = msg.get("backoff_schedule");
-                let retry_count: i32 = msg.get("retry_count");
-                let backoff_schedule: Vec<u64> = backoff_json
-                    .and_then(|j| serde_json::from_str(&j).ok())
-                    .unwrap_or_default();
+      if let Some(msg) = msg_row {
+        let backoff_json: Option<String> = msg.get("backoff_schedule");
+        let retry_count: i32 = msg.get("retry_count");
+        let backoff_schedule: Vec<u64> = backoff_json
+          .and_then(|j| serde_json::from_str(&j).ok())
+          .unwrap_or_default();
 
-                if !backoff_schedule.is_empty() {
-                    let delay_ms = backoff_schedule[0] as i64;
-                    let new_deadline = now_ms + delay_ms;
-                    let remaining = serde_json::to_string(&backoff_schedule[1..])
-                        .unwrap_or_else(|_| "[]".to_string());
+        if !backoff_schedule.is_empty() {
+          let delay_ms = backoff_schedule[0] as i64;
+          let new_deadline = now_ms + delay_ms;
+          let remaining = serde_json::to_string(&backoff_schedule[1..])
+            .unwrap_or_else(|_| "[]".to_string());
 
-                    tx.execute(
+          tx.execute(
                         r#"UPDATE queue_messages
                            SET deadline = $1, backoff_schedule = $2, retry_count = $3
                            WHERE id = $4"#,
                         &[&new_deadline, &remaining, &(retry_count + 1), &message_id],
                     ).await?;
-                    requeued += 1;
-                } else {
-                    // No retries left — delete the message
-                    tx.execute("DELETE FROM queue_messages WHERE id = $1", &[&message_id]).await?;
-                }
-            }
+          requeued += 1;
+        } else {
+          // No retries left — delete the message
+          tx.execute(
+            "DELETE FROM queue_messages WHERE id = $1",
+            &[&message_id],
+          )
+          .await?;
         }
-
-        tx.commit().await?;
-        Ok(requeued)
+      }
     }
 
-    /// Encode a value for storage
-    fn encode_value(&self, value: &KvValue) -> (Vec<u8>, i32) {
-        match value {
-            KvValue::V8(v) => (v.clone(), 1),
-            KvValue::Bytes(v) => (v.clone(), 3),
-            KvValue::U64(v) => {
-                let mut buf = [0; 8];
-                buf.copy_from_slice(&v.to_le_bytes());
-                (buf.to_vec(), 2)
-            }
-        }
+    tx.commit().await?;
+    Ok(requeued)
+  }
+
+  /// Encode a value for storage
+  fn encode_value(&self, value: &KvValue) -> (Vec<u8>, i32) {
+    match value {
+      KvValue::V8(v) => (v.clone(), 1),
+      KvValue::Bytes(v) => (v.clone(), 3),
+      KvValue::U64(v) => {
+        let mut buf = [0; 8];
+        buf.copy_from_slice(&v.to_le_bytes());
+        (buf.to_vec(), 2)
+      }
     }
+  }
 }
 
 /// Convert a monotonic i64 version to a 10-byte versionstamp.
 /// Matches the SQLite backend format: 8-byte big-endian version + 2 zero bytes.
 fn version_to_versionstamp(version: i64) -> Versionstamp {
-    let mut versionstamp = [0u8; 10];
-    versionstamp[..8].copy_from_slice(&version.to_be_bytes());
-    versionstamp
+  let mut versionstamp = [0u8; 10];
+  versionstamp[..8].copy_from_slice(&version.to_be_bytes());
+  versionstamp
 }
