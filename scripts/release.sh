@@ -26,7 +26,7 @@ fi
 
 case "$command" in
   bump)
-    for crate in denokv proto remote sqlite timemachine; do
+    for crate in denokv proto postgres remote sqlite timemachine; do
       sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$version\"/" \
         "$crate/Cargo.toml"
       rm "$crate/Cargo.toml.bak"
