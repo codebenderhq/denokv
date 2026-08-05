@@ -349,3 +349,30 @@ impl From<Vec<WatchKeyOutput>> for pb::WatchOutput {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn atomic_write_with_checks(count: usize) -> pb::AtomicWrite {
+    pb::AtomicWrite {
+      checks: (0..count)
+        .map(|index| pb::Check {
+          key: index.to_be_bytes().to_vec(),
+          versionstamp: vec![],
+        })
+        .collect(),
+      mutations: vec![],
+      enqueues: vec![],
+    }
+  }
+
+  #[test]
+  fn atomic_write_check_limit_matches_deno_runtime() {
+    assert!(AtomicWrite::try_from(atomic_write_with_checks(100)).is_ok());
+    assert!(matches!(
+      AtomicWrite::try_from(atomic_write_with_checks(101)),
+      Err(ConvertError::TooManyChecks)
+    ));
+  }
+}
