@@ -12,6 +12,7 @@ import {
   KvKey,
   KvListOptions,
   KvListSelector,
+  KvMutation,
 } from "./kv_types.ts";
 import {
   BaseKv,
@@ -19,7 +20,6 @@ import {
   DecodeV8,
   EncodeV8,
   Enqueue,
-  KvMutation,
   packCursor,
   packKvValue,
   readValue,
@@ -289,6 +289,9 @@ function computeKvMutationMessage(
     expireAtMs: mut.type === "set" && typeof mut.expireIn === "number"
       ? (Date.now() + mut.expireIn).toString()
       : "0",
+    sumMin: new Uint8Array(),
+    sumMax: new Uint8Array(),
+    sumClamp: false,
   };
 }
 

@@ -55,6 +55,22 @@ Deno KV backend built into the Deno CLI. You can open a temporary in memory KV
 database with `Deno.openKv(":memory:")` or a persistent database by specifying a
 path like `Deno.openKv("./my-database.sqlite")`.
 
+## Supported features
+
+All Deno KV operations are supported when connecting to `denokv` over KV
+Connect, with one exception: queues. The KV Connect protocol does not
+include queue operations, so `enqueue()` and `listenQueue()` only work
+with a local database (a path passed to `Deno.openKv()`, or the sqlite
+and in-memory backends of the [`@deno/kv` npm package](./npm/README.md)).
+
+| Feature                                          | Local database | KV Connect (`denokv` or Deno Deploy) |
+| ------------------------------------------------ | -------------- | ------------------------------------ |
+| `get` / `getMany` / `set` / `delete` / `list`    | ✅             | ✅                                   |
+| `atomic()` (checks, `sum` / `min` / `max`)       | ✅             | ✅                                   |
+| Key expiration (`expireIn`)                      | ✅             | ✅                                   |
+| `watch`                                          | ✅             | ✅                                   |
+| `enqueue` / `listenQueue`                        | ✅             | ❌ (not part of the protocol)        |
+
 ## How to run
 
 ### Docker on a VPS
@@ -85,6 +101,54 @@ You should additionally add a HTTPS terminating proxy or loadbalancer in front
 of `denokv` to ensure that all communication happens over TLS. Not using TLS can
 pose a significant security risk. The HTTP protocol used by Deno KV is
 compatible with any HTTP proxy, such as `caddy`, `nginx`, or a loadbalancer.
+See [HTTPS with a reverse proxy](#https-with-a-reverse-proxy) for a worked
+example.
+
+### HTTPS with a reverse proxy
+
+`denokv` itself only speaks plain HTTP. To serve it over TLS, run an
+HTTPS-terminating reverse proxy in front of it. [Caddy](https://caddyserver.com/)
+is a convenient choice because it obtains and renews certificates
+automatically.
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  denokv:
+    image: ghcr.io/denoland/denokv
+    command: --sqlite-path /data/denokv.sqlite serve --access-token ${DENO_KV_ACCESS_TOKEN}
+    volumes:
+      - ./data:/data
+  caddy:
+    image: caddy:2
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+volumes:
+  caddy-data:
+```
+
+`Caddyfile` (replace `kv.example.com` with your domain, pointed at this
+host):
+
+```
+kv.example.com {
+    reverse_proxy denokv:4512
+}
+```
+
+Then connect over HTTPS:
+
+```js
+const kv = await Deno.openKv("https://kv.example.com/");
+```
+
+When using `nginx` instead, disable response buffering for the watch
+endpoint (`proxy_buffering off;`), which streams its response — buffering
+proxies delay watch notifications indefinitely.
 
 ### Fly.io
 
