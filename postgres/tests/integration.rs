@@ -2,8 +2,8 @@
 
 use denokv_postgres::{Postgres, PostgresConfig};
 use denokv_proto::{
-  AtomicWrite, Check, Database, KvValue, Mutation, MutationKind, ReadRange,
-  SnapshotReadOptions,
+  AtomicWrite, AtomicWriteOutcome, Database, KvValue, Mutation, MutationKind,
+  ReadRange, SnapshotReadOptions,
 };
 use std::num::NonZeroU32;
 
@@ -39,7 +39,7 @@ async fn test_postgres_basic_operations() {
     .atomic_write(atomic_write)
     .await
     .expect("Atomic write failed");
-  assert!(result.is_some());
+  assert!(matches!(result, AtomicWriteOutcome::Committed(_)));
 
   // Test read operation
   let read_range = ReadRange {
@@ -81,7 +81,7 @@ async fn test_postgres_basic_operations() {
     .atomic_write(delete_write)
     .await
     .expect("Delete failed");
-  assert!(result.is_some());
+  assert!(matches!(result, AtomicWriteOutcome::Committed(_)));
 
   // Verify deletion
   let read_range = ReadRange {

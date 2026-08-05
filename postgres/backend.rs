@@ -241,9 +241,7 @@ impl PostgresBackend {
         row.map(|r| r.get::<_, Vec<u8>>("versionstamp"));
 
       if let Some(expected) = &check.versionstamp {
-        if current_versionstamp.as_ref().map(|v| v.as_slice())
-          != Some(expected.as_slice())
-        {
+        if current_versionstamp.as_deref() != Some(expected.as_slice()) {
           failed_checks.push(index as u32);
         }
       } else if current_versionstamp.is_some() {
@@ -275,7 +273,7 @@ impl PostgresBackend {
                             expires_at = EXCLUDED.expires_at,
                             updated_at = NOW()
                         "#,
-                        &[&mutation.key, &value_bytes, &(encoding as i32), &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
+                        &[&mutation.key, &value_bytes, &encoding, &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
                     ).await?;
         }
         MutationKind::Delete => {
@@ -309,7 +307,7 @@ impl PostgresBackend {
                         INSERT INTO kv_store (key, value, value_encoding, versionstamp, expires_at, updated_at)
                         VALUES ($1, $2, $3, $4, $5, NOW())
                         "#,
-                        &[&new_key, &value_bytes, &(encoding as i32), &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
+                        &[&new_key, &value_bytes, &encoding, &versionstamp.as_slice(), &expires_at.map(|dt| dt.timestamp_millis())],
                     ).await?;
         }
       }
@@ -321,7 +319,7 @@ impl PostgresBackend {
       let backoff_json = enqueue
         .backoff_schedule
         .as_ref()
-        .map(|b| serde_json::to_string(b))
+        .map(serde_json::to_string)
         .transpose()?;
 
       tx.execute(
