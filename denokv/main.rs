@@ -106,13 +106,17 @@ impl DatabaseBackend {
   async fn atomic_write(
     &self,
     write: AtomicWrite,
-  ) -> Result<denokv_proto::AtomicWriteOutcome, deno_error::JsErrorBox> {
+  ) -> Result<denokv_proto::AtomicWriteOutcome, ApiError> {
     match self {
-      DatabaseBackend::Sqlite(sqlite) => sqlite
-        .atomic_write(write)
-        .await
-        .map_err(deno_error::JsErrorBox::from_err),
-      DatabaseBackend::Postgres(postgres) => postgres.atomic_write(write).await,
+      DatabaseBackend::Sqlite(sqlite) => {
+        sqlite.atomic_write(write).await.map_err(ApiError::from)
+      }
+      DatabaseBackend::Postgres(postgres) => {
+        postgres.atomic_write(write).await.map_err(|error| {
+          log::error!("PostgreSQL atomic_write failed: {error}");
+          ApiError::InternalServerError
+        })
+      }
     }
   }
 
@@ -586,14 +590,7 @@ async fn atomic_write_endpoint(
 ) -> Result<Protobuf<pb::AtomicWriteOutput>, ApiError> {
   let atomic_write: AtomicWrite = atomic_write.try_into()?;
 
-  let res = state
-    .database
-    .atomic_write(atomic_write)
-    .await
-    .map_err(|e| {
-      log::error!("atomic_write failed: {}", e);
-      e
-    })?;
+  let res = state.database.atomic_write(atomic_write).await?;
 
   Ok(Protobuf(res.into()))
 }
