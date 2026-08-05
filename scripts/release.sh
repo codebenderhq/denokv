@@ -38,12 +38,19 @@ case "$command" in
     cargo update --workspace --quiet
     ;;
   notes)
-    prev=$(git describe --tags --abbrev=0 HEAD)
+    repository=${GITHUB_REPOSITORY:-denoland/denokv}
+    if prev=$(git describe --tags --abbrev=0 HEAD 2>/dev/null); then
+      range="$prev..HEAD"
+      changelog="https://github.com/$repository/compare/$prev...$version"
+    else
+      range=HEAD
+      changelog="https://github.com/$repository/commits/$version"
+    fi
     echo "## What's Changed"
-    git log --oneline --no-decorate --no-merges "$prev..HEAD" \
+    git log --oneline --no-decorate --no-merges "$range" \
       | sed -E 's/^[0-9a-f]+ /* /'
     echo
-    echo "**Full Changelog**: https://github.com/denoland/denokv/compare/$prev...$version"
+    echo "**Full Changelog**: $changelog"
     ;;
   *)
     usage
