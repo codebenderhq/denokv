@@ -55,8 +55,13 @@ impl Postgres {
     let manager = Manager::new(pg_config, NoTls);
 
     // Create the connection pool
+    // Waiting for a connection ends in an error after the timeout: a pool
+    // with none to give is said, not waited on for ever.
     let pool = Pool::builder(manager)
       .max_size(config.max_connections)
+      .wait_timeout(Some(Duration::from_secs(config.connection_timeout)))
+      .create_timeout(Some(Duration::from_secs(config.connection_timeout)))
+      .runtime(Runtime::Tokio1)
       .build()
       .map_err(|e| {
         PostgresError::ConnectionFailed(format!(
@@ -225,24 +230,28 @@ impl Database for Postgres {
         }
 
         loop {
-            // Get current values
-            let conn = backend.pool.get().await
-                .map_err(|e| JsErrorBox::generic(format!("Failed to get connection: {}", e)))?;
-
+            // Get current values. The connection is held for the read alone
+            // and is back in the pool before the wait: a watch that waits
+            // holds none.
             let mut outputs = Vec::new();
-            for key in &keys {
-                let request = ReadRange {
-                    start: key.clone(),
-                    end: key.iter().copied().chain(Some(0)).collect(),
-                    limit: std::num::NonZeroU32::new(1).unwrap(),
-                    reverse: false,
-                };
+            {
+                let conn = backend.pool.get().await
+                    .map_err(|e| JsErrorBox::generic(format!("Failed to get connection: {}", e)))?;
 
-                let entries = backend.read_range(&conn, &request).await
-                    .map_err(JsErrorBox::from_err)?;
+                for key in &keys {
+                    let request = ReadRange {
+                        start: key.clone(),
+                        end: key.iter().copied().chain(Some(0)).collect(),
+                        limit: std::num::NonZeroU32::new(1).unwrap(),
+                        reverse: false,
+                    };
 
-                let entry = entries.into_iter().next();
-                outputs.push(WatchKeyOutput::Changed { entry });
+                    let entries = backend.read_range(&conn, &request).await
+                        .map_err(JsErrorBox::from_err)?;
+
+                    let entry = entries.into_iter().next();
+                    outputs.push(WatchKeyOutput::Changed { entry });
+                }
             }
 
             yield outputs;

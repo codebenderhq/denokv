@@ -173,3 +173,91 @@ async fn test_postgres_sum_operations() {
     _ => panic!("Expected U64 value"),
   }
 }
+
+// A watch waits for as long as nothing is written. However many are open, the
+// pool still has a connection for a read and for a write, and the write wakes
+// every one of them.
+#[tokio::test]
+async fn test_postgres_waiting_watches_hold_no_connection() {
+  use futures::StreamExt;
+  use std::time::Duration;
+
+  // Skip test if no PostgreSQL is available
+  if std::env::var("POSTGRES_URL").is_err() {
+    println!("Skipping PostgreSQL test - POSTGRES_URL not set");
+    return;
+  }
+
+  let postgres_url = std::env::var("POSTGRES_URL").unwrap();
+  let max_connections = 4;
+  let config = PostgresConfig::new(postgres_url)
+    .with_max_connections(max_connections)
+    .with_connection_timeout(5);
+  let postgres = Postgres::new(config)
+    .await
+    .expect("Failed to create PostgreSQL instance");
+
+  let key = b"watched_key".to_vec();
+  let set = |value: &'static [u8]| AtomicWrite {
+    checks: vec![],
+    mutations: vec![Mutation {
+      key: b"watched_key".to_vec(),
+      kind: MutationKind::Set(KvValue::Bytes(value.to_vec())),
+      expire_at: None,
+    }],
+    enqueues: vec![],
+  };
+
+  // Three times as many watches as the pool has connections, each read up to
+  // where it waits for a change.
+  let mut watches = Vec::new();
+  for _ in 0..max_connections * 3 {
+    let mut watch = postgres.watch(vec![key.clone()]);
+    tokio::time::timeout(Duration::from_secs(5), watch.next())
+      .await
+      .expect("A watch did not say what the key holds")
+      .expect("The watch ended")
+      .expect("The watch failed");
+    watches.push(watch);
+  }
+  let waiting: Vec<_> = watches
+    .into_iter()
+    .map(|mut watch| tokio::spawn(async move { watch.next().await }))
+    .collect();
+  tokio::time::sleep(Duration::from_millis(200)).await;
+
+  let read_range = ReadRange {
+    start: key.clone(),
+    end: key.iter().copied().chain(Some(0)).collect(),
+    limit: NonZeroU32::new(1).unwrap(),
+    reverse: false,
+  };
+  let options = SnapshotReadOptions {
+    consistency: denokv_proto::Consistency::Strong,
+  };
+  tokio::time::timeout(
+    Duration::from_secs(2),
+    postgres.snapshot_read(vec![read_range], options),
+  )
+  .await
+  .expect("A read waited on a connection the watches hold")
+  .expect("Snapshot read failed");
+
+  let written = tokio::time::timeout(
+    Duration::from_secs(2),
+    postgres.atomic_write(set(b"changed")),
+  )
+  .await
+  .expect("A write waited on a connection the watches hold")
+  .expect("Atomic write failed");
+  assert!(matches!(written, AtomicWriteOutcome::Committed(_)));
+
+  for woken in waiting {
+    tokio::time::timeout(Duration::from_secs(5), woken)
+      .await
+      .expect("A watch was not woken by the write")
+      .expect("The watch task failed")
+      .expect("The watch ended")
+      .expect("The watch failed");
+  }
+}
